@@ -27,10 +27,11 @@
 #define FW_NAME       "OXRS-BMD-PDU-ESP32-FW"
 #define FW_SHORT_NAME "Power Distribution Unit"
 #define FW_MAKER      "Bedrock Media Designs"
-#define FW_VERSION    "1.0.0"
+#define FW_VERSION    "1.0.0-ALPHA1"
 
 /*--------------------------- Libraries ----------------------------------*/
 #include <Adafruit_MCP23X17.h>        // For MCP23017 I/O buffers
+#include <Adafruit_INA260.h>          // For INA260 current sensors
 #include <OXRS_Rack32.h>              // Rack32 support
 #include <OXRS_Input.h>               // For input handling
 #include <OXRS_Output.h>              // For output handling
@@ -39,6 +40,17 @@
 /*--------------------------- Constants ----------------------------------*/
 // Serial
 #define       SERIAL_BAUD_RATE      115200
+
+// Default publish telemetry interval (5 seconds)
+#define       DEFAULT_PUBLISH_TELEMETRY_MS  5000
+
+// Can have up to 16x INA260s on a single I2C bus
+const byte    INA_I2C_ADDRESS[]     = { 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F };
+const uint8_t INA_COUNT             = sizeof(INA_I2C_ADDRESS);
+
+// INA260 setup (should we make this configurable?)
+const INA260_AveragingCount DEFAULT_AVERAGING_COUNT = INA260_COUNT_16;
+const INA260_ConversionTime DEFAULT_CONVERSION_TIME = INA260_TIME_140_us;
 
 // Define the MCP addresses
 #define       MCP_OUTPUT_I2C_ADDR   0x20
@@ -51,12 +63,23 @@
 #define       I2C_CLOCK_SPEED       400000L
 
 /*--------------------------- Global Variables ---------------------------*/
+// Each bit corresponds to an INA260 found on the IC2 bus
+uint8_t g_inas_found = 0;
+
 bool mcpOutputFound = false;
 bool mcpInputFound  = false;
+
+// Publish telemetry data interval - extend or disable via the config
+// option "publishTelemetrySeconds" - zero to disable
+uint32_t publishTelemetryMs = DEFAULT_PUBLISH_TELEMETRY_MS;
+uint32_t lastPublishTelemetry = 0L;
 
 /*--------------------------- Global Objects -----------------------------*/
 // Rack32 handler
 OXRS_Rack32 rack32(FW_NAME, FW_SHORT_NAME, FW_MAKER, FW_VERSION, FW_LOGO);
+
+// Current sensors
+Adafruit_INA260 ina260[INA_COUNT];
 
 // I/O buffers
 Adafruit_MCP23X17 mcpOutput;
@@ -109,6 +132,27 @@ void loop()
   // Let Rack32 hardware handle any events etc
   rack32.loop();
 
+  float mA[INA_COUNT];
+  float mV[INA_COUNT];
+  float mW[INA_COUNT];
+
+  // Iterate through each of the INA260s and read
+  for (uint8_t ina = 0; ina < INA_COUNT; ina++)
+  {
+    if (bitRead(g_inas_found, ina) == 0)
+      continue;
+
+    // Read the values for this sensor
+    mA[ina] = ina260[ina].readCurrent();
+    mV[ina] = ina260[ina].readBusVoltage();
+    mW[ina] = ina260[ina].readPower();
+
+    // TODO: keep track of total power draw and check thresholds?
+  }
+
+  // Publish telemetry data if required
+  publishTelemetry(mA, mV, mW);
+
   if (mcpOutputFound)
   {
     // Check for any output events
@@ -131,6 +175,40 @@ void loop()
   }
 }
 
+void publishTelemetry(float mA[], float mV[], float mW[])
+{
+  // Ignore if publishing has been disabled
+  if (publishTelemetryMs == 0) { return; }
+
+  // Check if we are ready to publish
+  if ((millis() - lastPublishTelemetry) > publishTelemetryMs)
+  {
+    DynamicJsonDocument json(1024);
+    JsonArray array = json.to<JsonArray>();
+   
+    for (uint8_t ina = 0; ina < INA_COUNT; ina++)
+    {
+      if (bitRead(g_inas_found, ina) == 0)
+        continue;
+
+      JsonObject inaJson = array.createNestedObject();
+      inaJson["index"] = ina + 1;
+      inaJson["current"] = mA[ina];
+      inaJson["voltage"] = mV[ina];
+      inaJson["power"] = mW[ina];
+    }
+
+    // Publish to MQTT
+    if (!json.isNull())
+    {
+      rack32.publishTelemetry(json.as<JsonVariant>());
+    }
+    
+    // Reset our timer
+    lastPublishTelemetry = millis();
+  }
+}
+
 /**
   Config handler
  */
@@ -139,6 +217,13 @@ void setConfigSchema()
   // Define our config schema
   StaticJsonDocument<2048> json;
   JsonVariant config = json.as<JsonVariant>();
+
+  JsonObject publishTelemetrySeconds = config.createNestedObject("publishTelemetrySeconds");
+  publishTelemetrySeconds["title"] = "Publish Telemetry (seconds)";
+  publishTelemetrySeconds["description"] = "How often to publish sensor data from the onboard INA260 current sensors (defaults to 60 seconds, setting to 0 disables temperature reports). Must be a number between 0 and 86400 (i.e. 1 day).";
+  publishTelemetrySeconds["type"] = "integer";
+  publishTelemetrySeconds["minimum"] = 0;
+  publishTelemetrySeconds["maximum"] = 86400;
 
   if (mcpOutputFound)
   {
@@ -172,6 +257,11 @@ void outputConfigSchema(JsonVariant json)
 
 void jsonConfig(JsonVariant json)
 {
+  if (json.containsKey("publishTelemetrySeconds"))
+  {
+    publishTelemetryMs = json["publishTelemetrySeconds"].as<uint32_t>() * 1000L;
+  }
+
   if (json.containsKey("outputs"))
   {
     for (JsonVariant output : json["outputs"].as<JsonArray>())
@@ -378,26 +468,53 @@ void outputEvent(uint8_t id, uint8_t output, uint8_t type, uint8_t state)
  */
 void scanI2CBus()
 {
-  Serial.println(F("[pdu ] scanning for I/O buffers..."));
+  // Initialise current sensors
+  Serial.println(F("[pdu ] scanning for current sensors..."));
+
+  for (uint8_t ina = 0; ina < INA_COUNT; ina++)
+  {
+    Serial.print(F(" - 0x"));
+    Serial.print(INA_I2C_ADDRESS[ina], HEX);
+    Serial.print(F("..."));
+
+    if (ina260[ina].begin(INA_I2C_ADDRESS[ina]))
+    {
+      bitWrite(g_inas_found, ina, 1);
+
+      // Set the number of samples to average
+      ina260[ina].setAveragingCount(DEFAULT_AVERAGING_COUNT);
+      
+      // Set the time over which to measure the current and bus voltage
+      ina260[ina].setVoltageConversionTime(DEFAULT_CONVERSION_TIME);
+      ina260[ina].setCurrentConversionTime(DEFAULT_CONVERSION_TIME);
+
+      Serial.println(F("INA260"));
+    }
+    else
+    {
+      Serial.println(F("empty"));
+    }
+  }
 
   // Initialise I/O buffers
-  mcpOutputFound = initialiseMCP23017(&mcpOutput, MCP_OUTPUT_I2C_ADDR, OUTPUT);
-  mcpInputFound =  initialiseMCP23017(&mcpInput,  MCP_INPUT_I2C_ADDR,  INPUT);
+  Serial.println(F("[pdu ] scanning for I/O buffers..."));
 
-  // Initialise the output handler (default to RELAY, not configurable)
-  if (mcpOutputFound)
+  if (initialiseMCP23017(&mcpOutput, MCP_OUTPUT_I2C_ADDR, OUTPUT))
   {
+    // Initialise the output handler (default to RELAY, not configurable)
     oxrsOutput.begin(outputEvent, RELAY);
+    mcpOutputFound = true;
   }
   else
   {
     Serial.println(F("[pdu ] no output I/O detected, unable to control relays"));
   }
 
-  // Initialise the input handler (default to SWITCH, not configurable)
-  if (mcpInputFound)
+  if (initialiseMCP23017(&mcpInput, MCP_INPUT_I2C_ADDR, INPUT))
   {
+    // Initialise the input handler (default to SWITCH, not configurable)
     oxrsInput.begin(inputEvent, SWITCH);
+    mcpInputFound = true;
   }
   else
   {
