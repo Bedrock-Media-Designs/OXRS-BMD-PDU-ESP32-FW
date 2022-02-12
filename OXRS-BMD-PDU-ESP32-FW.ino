@@ -481,6 +481,7 @@ void scanI2CBus()
     if (ina260[ina].begin(INA_I2C_ADDRESS[ina]))
     {
       bitWrite(g_inasFound, ina, 1);
+      Serial.println(F("INA260"));
 
       // Set the number of samples to average
       ina260[ina].setAveragingCount(DEFAULT_AVERAGING_COUNT);
@@ -488,8 +489,6 @@ void scanI2CBus()
       // Set the time over which to measure the current and bus voltage
       ina260[ina].setVoltageConversionTime(DEFAULT_CONVERSION_TIME);
       ina260[ina].setCurrentConversionTime(DEFAULT_CONVERSION_TIME);
-
-      Serial.println(F("INA260"));
     }
     else
     {
@@ -500,42 +499,38 @@ void scanI2CBus()
   // Initialise I/O buffers
   Serial.println(F("[pdu ] scanning for I/O buffers..."));
 
-  initialiseMCP23017(MCP_OUTPUT_INDEX, OUTPUT);
-  initialiseMCP23017(MCP_INPUT_INDEX, INPUT);
-}
-
-void initialiseMCP23017(int mcp, int pinMode)
-{
-  Serial.print(F(" - 0x"));
-  Serial.print(MCP_I2C_ADDRESS[mcp], HEX);
-  Serial.print(F("..."));
-
-  Wire.beginTransmission(MCP_I2C_ADDRESS[mcp]);
-  if (Wire.endTransmission() == 0)
+  for (uint8_t mcp = 0; mcp < MCP_COUNT; mcp++)
   {
-    bitWrite(g_mcpsFound, mcp, 1);
-
-    mcp23017[mcp].begin_I2C(MCP_I2C_ADDRESS[mcp]);
-    for (uint8_t pin = 0; pin < MCP_PIN_COUNT; pin++)
+    Serial.print(F(" - 0x"));
+    Serial.print(MCP_I2C_ADDRESS[mcp], HEX);
+    Serial.print(F("..."));
+  
+    Wire.beginTransmission(MCP_I2C_ADDRESS[mcp]);
+    if (Wire.endTransmission() == 0)
     {
-      mcp23017[mcp].pinMode(pin, pinMode);
-    }
-
-    if (pinMode == OUTPUT)
-    {
-      // Initialise the output handler (default to RELAY, not configurable)
-      oxrsOutput.begin(outputEvent, RELAY);
-      Serial.println(F("MCP23017 [output]"));
+      bitWrite(g_mcpsFound, mcp, 1);
+      Serial.println(F("MCP23017"));
+  
+      mcp23017[mcp].begin_I2C(MCP_I2C_ADDRESS[mcp]);
+      for (uint8_t pin = 0; pin < MCP_PIN_COUNT; pin++)
+      {
+        mcp23017[mcp].pinMode(pin, mcp == MCP_OUTPUT_INDEX ? OUTPUT : INPUT);
+      }
+  
+      if (mcp == MCP_OUTPUT_INDEX)
+      {
+        // Initialise the output handler (default to RELAY, not configurable)
+        oxrsOutput.begin(outputEvent, RELAY);
+      }
+      if (mcp == MCP_INPUT_INDEX)
+      {
+        // Initialise the input handler (default to SWITCH, not configurable)
+        oxrsInput.begin(inputEvent, SWITCH);
+      }
     }
     else
     {
-      // Initialise the input handler (default to SWITCH, not configurable)
-      oxrsInput.begin(inputEvent, SWITCH);
-      Serial.println(F("MCP23017 [input]"));
+      Serial.println(F("empty"));
     }
-  }
-  else
-  {
-    Serial.println(F("empty"));
   }
 }
