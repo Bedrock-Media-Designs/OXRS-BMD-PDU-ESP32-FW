@@ -32,7 +32,7 @@
 /*--------------------------- Libraries ----------------------------------*/
 #include <Adafruit_MCP23X17.h>        // For MCP23017 I/O buffers
 #include <Adafruit_INA260.h>          // For INA260 current sensors
-#include <OXRS_Rack32.h>              // Rack32 support
+#include "src\OXRS_Rack32.h"              // Rack32 support
 #include <OXRS_Input.h>               // For input handling
 #include <OXRS_Output.h>              // For output handling
 #include "logo.h"                     // Embedded maker logo
@@ -114,7 +114,7 @@ void setup()
   rack32.begin(jsonConfig, jsonCommand);
 
   // Set up port display
-  //rack32.setDisplayPortLayout(g_mcpsFound, PORT_LAYOUT_IO_48);
+  rack32.setDisplayBars();
   
   // Set up config/command schema (for self-discovery and adoption)
   setConfigSchema();
