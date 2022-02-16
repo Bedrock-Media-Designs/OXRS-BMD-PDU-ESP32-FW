@@ -36,6 +36,7 @@
 #include <OXRS_Input.h>               // For input handling
 #include <OXRS_Output.h>              // For output handling
 #include "logo.h"                     // Embedded maker logo
+#include "src\OXRS-BMD-PDU-LCD.h"
 
 /*--------------------------- Constants ----------------------------------*/
 // Serial
@@ -89,6 +90,11 @@ Adafruit_MCP23X17 mcp23017[MCP_COUNT];
 OXRS_Output oxrsOutput;
 OXRS_Input oxrsInput;
 
+// pointer to default screen class
+OXRS_LCD* _defaultScreen;
+// custom screen class object
+OXRS_LCD_CUSTOM _customScreen = OXRS_LCD_CUSTOM();
+
 /*--------------------------- Program ------------------------------------*/
 /**
   Setup
@@ -111,10 +117,17 @@ void setup()
   scanI2CBus();
 
   // Start Rack32 hardware
-  rack32.begin(jsonConfig, jsonCommand);
+  _defaultScreen = rack32.begin(jsonConfig, jsonCommand);
 
-  // Set up port display
-  //rack32.setDisplayPortLayout(g_mcpsFound, PORT_LAYOUT_IO_48);
+  // configure default screen
+  _defaultScreen->setIPpos(45);
+  _defaultScreen->setMACpos(0);
+  _defaultScreen->setMQTTpos(60);
+  _defaultScreen->setTEMPpos(75);
+ 
+  // Set up bar display
+  _customScreen.begin(_defaultScreen->getTft());
+  _customScreen.drawBars();
   
   // Set up config/command schema (for self-discovery and adoption)
   setConfigSchema();
@@ -148,6 +161,9 @@ void loop()
     mV[ina] = ina260[ina].readBusVoltage();
     mW[ina] = ina260[ina].readPower();
     alert[ina] = ina260[ina].alertFunctionFlag();
+
+    _customScreen.setBarState(ina, CHANNEL_ON);
+    _customScreen.setBarValue(ina, mA[ina]);
     
     // TODO: keep track of total power draw and check thresholds?
   }
@@ -171,7 +187,7 @@ void loop()
     uint16_t io_value = mcp23017[mcp].readGPIOAB();
     
     // Show port animations
-    rack32.updateDisplayPorts(mcp, io_value);
+//    rack32.updateDisplayPorts(mcp, io_value);
 
     // Check for any input events
     if (mcp == MCP_INPUT_INDEX)
