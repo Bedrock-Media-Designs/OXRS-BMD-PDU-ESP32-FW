@@ -21,17 +21,34 @@ void H_Bar::begin(TFT_eSPI *tft, int y, int index)
     _drawIndex(index);
   }
   
-  _drawLinearMeter(0, BAR_X, y, BAR_W, BAR_H, BAR_GAP, BAR_SEGMENTS, GREEN2RED);
-  _drawValue(0.0);
-  _drawState(_state);
+  _drawMeter(0, BAR_X, y, BAR_W, BAR_H, BAR_GAP, BAR_SEGMENTS, GREEN2RED);
+  _drawValue(0, VALUE_X_A, DP_A, "A");
+
+  if (index != 0)
+  {
+    // Only display voltage and state for outputs (not "T"otal bar)
+    _drawValue(0, VALUE_X_V, DP_V, "V");
+    _drawState(_state);
+  }  
 }
 
-void H_Bar::setValue(float value)
+void H_Bar::setMaxValue(float mA)
 {
-  int bar_val = (int)(BAR_SEGMENTS * value / _maxValue + .9);
+  // Sets the max current allowed and thus the limit of our bar graph
+  _max_mA = mA;
+}
+
+void H_Bar::setValue(float mA, float mV)
+{
+  int bar_mA = (int)(BAR_SEGMENTS * mA / _max_mA + .9);
   
-  _drawLinearMeter(bar_val, BAR_X, _y, BAR_W, BAR_H, BAR_GAP, BAR_SEGMENTS, GREEN2RED);
-  _drawValue(value);
+  _drawMeter(bar_mA, BAR_X, _y, BAR_W, BAR_H, BAR_GAP, BAR_SEGMENTS, GREEN2RED);
+  _drawValue(mA / 1000.0, VALUE_X_A, DP_A, "A");
+
+  if (mV != NAN)
+  {
+    _drawValue(mV / 1000.0, VALUE_X_V, DP_V, "V");
+  }
 }
 
 void H_Bar::setState(int state)
@@ -41,44 +58,43 @@ void H_Bar::setState(int state)
   _drawState(_state);
 }
 
-void H_Bar::setMaxValue(float value)
-{
-  _maxValue = value;
-}
-
 /*
  * Draw the linear meter
- * val =  reading to show (range is 0 to n)
+ * mA   =  reading to show (range is 0 to n)
  * x, y = position of top left corner
  * w, h = width and height of a single bar
  * g    = pixel gap to next bar (can be 0)
  * n    = number of segments
  * s    = color scheme
  */
-void H_Bar::_drawLinearMeter(int val, int x, int y, int w, int h, int g, int n, byte s)
+void H_Bar::_drawMeter(int mA, int x, int y, int w, int h, int g, int n, byte s)
 {
-  int color = TFT_BLUE;
-  if (val > _peak) {_peak = val;}
+  // Keep track of our peak
+  if (mA > _peak_mA) {_peak_mA = mA;}
+  
   // Draw n color blocks
   for (int b = 1; b <= n; b++)
   {
-    if (val > 0 && b <= val)
-    // Fill in colored blocks
+    int color = TFT_BLUE;
+    
+    if (mA > 0 && b <= mA)
     { 
+      // Determine colour of active segment
       switch (s)
       {
         case SOLID_RED  : color = TFT_RED; break; // Fixed color
         case SOLID_GREEN: color = TFT_GREEN; break; // Fixed color
-        case GREEN2RED  : color = _rainbowColor(_fscale(b, 0, n,  63,   0, -5)); break; // Green to red
+        case GREEN2RED  : color = _rainbowColor(_fscale(b, 0, n, 63, 0, -5)); break; // Green to red
       }
-      _tft->fillRect(x + b*(w+g), y, w, h, color);
     }
     else 
-    // Fill in blank segments or peak value
     {
-      color = (b == _peak) ? TFT_CYAN : TFT_DARKGREY;
-      _tft->fillRect(x + b*(w+g), y, w, h, color);
+      // Determine colour of blank segment or peak value
+      color = (b == _peak_mA) ? TFT_CYAN : TFT_DARKGREY;
     }
+
+    // Draw the block
+    _tft->fillRect(x + b*(w+g), y, w, h, color);
   }
 }
 
@@ -110,6 +126,7 @@ uint16_t H_Bar::_rainbowColor(uint8_t spectrum)
       blue  = 0;
       break;
   }
+  
   return red << 11 | green << 6 | blue;
 }
 
@@ -127,47 +144,52 @@ void H_Bar::_drawTotal()
   _tft->drawString("T", 0, _y+1);
 }
 
+void H_Bar::_drawValue(float value, int x, int dp, const char * units)
+{
+  uint8_t actualDatum = _tft->getTextDatum();
+
+  _tft->setTextFont(1);
+  _tft->fillRect(x-25, _y, VALUE_W, VALUE_H, TFT_BLACK);
+  _tft->setTextDatum(TR_DATUM);
+  _tft->drawFloat(value, dp, x, _y+1);
+  _tft->setTextDatum(TL_DATUM);
+  _tft->drawString(units, x+2, _y+1); 
+  _tft->setTextDatum(actualDatum);
+  _tft->setTextDatum(actualDatum);
+}
+
 void H_Bar::_drawState(int state)
 {
   _tft->setTextFont(1);
   _tft->setTextDatum(TL_DATUM);
+
   switch (state)
   {
     case STATE_NA:
       _tft->setTextColor(TFT_WHITE);
-      _tft->fillRect(190, _y, 40, 9, TFT_DARKGREY);
-      _tft->drawString("N/A", 195, _y+1); 
-      _peak = -1;
+      _tft->fillRect(STATE_X, _y, STATE_W, STATE_H, TFT_DARKGREY);
+      _tft->drawString("N/A", STATE_X_TXT, _y+1); 
+      _peak_mA = -1;
       break;
     case STATE_OFF:
       _tft->setTextColor(TFT_WHITE);
-      _tft->fillRect(190, _y, 40, 9, TFT_DARKGREY);
-      _tft->drawString("OFF", 195, _y+1); 
-      _peak = -1;
+      _tft->fillRect(STATE_X, _y, STATE_W, STATE_H, TFT_DARKGREY);
+      _tft->drawString("OFF", STATE_X_TXT, _y+1); 
+      _peak_mA = -1;
       break;
     case STATE_ON:
       _tft->setTextColor(TFT_BLACK);
-      _tft->fillRect(190, _y, 40, 9, TFT_GREEN);
-      _tft->drawString("ON", 195, _y+1); 
+      _tft->fillRect(STATE_X, _y, STATE_W, STATE_H, TFT_GREEN);
+      _tft->drawString("ON", STATE_X_TXT, _y+1); 
       break;
     case STATE_ALERT:
       _tft->setTextColor(TFT_WHITE);
-      _tft->fillRect(190, _y, 40, 9, TFT_RED);
-      _tft->drawString("ALERT", 195, _y+1); 
-      _drawLinearMeter(BAR_SEGMENTS, BAR_X, _y, BAR_W, BAR_H, BAR_GAP, BAR_SEGMENTS, SOLID_RED);
+      _tft->fillRect(STATE_X, _y, STATE_W, STATE_H, TFT_RED);
+      _tft->drawString("ALERT", STATE_X_TXT, _y+1); 
       break;
    }
+   
   _tft->setTextColor(TFT_WHITE);
-}
-
-void H_Bar::_drawValue(float val)
-{
-  uint8_t actualDatum = _tft->getTextDatum();
-  _tft->setTextFont(1);
-  _tft->fillRect(180-45, _y, 45, 9, TFT_BLACK);
-  _tft->setTextDatum(TR_DATUM);
-  _tft->drawFloat(val, 2, 180, _y+1);
-  _tft->setTextDatum(actualDatum);
 }
 
 /*
