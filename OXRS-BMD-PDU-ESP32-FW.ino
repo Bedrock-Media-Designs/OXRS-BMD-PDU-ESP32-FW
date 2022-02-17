@@ -27,7 +27,7 @@
 #define FW_NAME       "OXRS-BMD-PDU-ESP32-FW"
 #define FW_SHORT_NAME "Power Distribution Unit"
 #define FW_MAKER      "Bedrock Media Designs"
-#define FW_VERSION    "1.0.0-ALPHA2"
+#define FW_VERSION    "BETA-1"
 
 /*--------------------------- Libraries ----------------------------------*/
 #include <Adafruit_MCP23X17.h>        // For MCP23017 I/O buffers
@@ -36,7 +36,7 @@
 #include <OXRS_Input.h>               // For input handling
 #include <OXRS_Output.h>              // For output handling
 #include "logo.h"                     // Embedded maker logo
-#include "src\OXRS-BMD-PDU-LCD.h"
+#include "H_Bar.h"
 
 /*--------------------------- Constants ----------------------------------*/
 // Serial
@@ -62,6 +62,9 @@ const uint8_t MCP_COUNT             = sizeof(MCP_I2C_ADDRESS);
 
 // Speed up the I2C bus to get faster event handling
 #define       I2C_CLOCK_SPEED       400000L
+
+// Can only display a max of 8 horizontal bars (plus a "T"otal bar)
+#define       MAX_HBAR_COUNT        8
 
 // Default publish telemetry interval (5 seconds)
 #define       DEFAULT_PUBLISH_TELEMETRY_MS  5000
@@ -90,10 +93,8 @@ Adafruit_MCP23X17 mcp23017[MCP_COUNT];
 OXRS_Output oxrsOutput;
 OXRS_Input oxrsInput;
 
-// pointer to default screen class
-OXRS_LCD* _defaultScreen;
-// custom screen class object
-OXRS_LCD_CUSTOM _customScreen = OXRS_LCD_CUSTOM();
+// Horizontal display bars (max bars + total bar)
+H_Bar hBar[MAX_HBAR_COUNT + 1];
 
 /*--------------------------- Program ------------------------------------*/
 /**
@@ -116,18 +117,8 @@ void setup()
   // Scan the I2C bus and set up current sensors and I/O buffers
   scanI2CBus();
 
-  // Start Rack32 hardware
-  _defaultScreen = rack32.begin(jsonConfig, jsonCommand);
-
-  // configure default screen
-  _defaultScreen->setIPpos(45);
-  _defaultScreen->setMACpos(0);
-  _defaultScreen->setMQTTpos(60);
-  _defaultScreen->setTEMPpos(75);
- 
-  // Set up bar display
-  _customScreen.begin(_defaultScreen->getTft());
-  _customScreen.drawBars();
+  // Start Rack32 hardware including custom LCD
+  setupRack32();
   
   // Set up config/command schema (for self-discovery and adoption)
   setConfigSchema();
@@ -150,6 +141,9 @@ void loop()
   float mW[INA_COUNT];
   bool alert[INA_COUNT];
 
+  uint8_t inaCount = 0;
+  float mATotal = 0;
+
   // Iterate through each of the INA260s found on the I2C bus
   for (uint8_t ina = 0; ina < INA_COUNT; ina++)
   {
@@ -162,11 +156,23 @@ void loop()
     mW[ina] = ina260[ina].readPower();
     alert[ina] = ina260[ina].alertFunctionFlag();
 
-    _customScreen.setBarState(ina, CHANNEL_ON);
-    _customScreen.setBarValue(ina, mA[ina]);
+    if (alert[ina])
+    {
+      // TODO: need to check if the relay is already off here!
+      outputEvent(MCP_OUTPUT_INDEX, ina, RELAY, RELAY_OFF);
+      setBarState(ina, STATE_ALERT);
+    }
+
+    // Update the bar for this sensor
+    setBarValue(ina, mA[ina]);
     
-    // TODO: keep track of total power draw and check thresholds?
+    // keep track of total current
+    inaCount++;
+    mATotal += mA[ina];
   }
+
+  // Update the total bar
+  setBarValue(inaCount, mATotal);
 
   // Publish telemetry data if required
   publishTelemetry(mA, mV, mW, alert);
@@ -186,9 +192,6 @@ void loop()
     // Read the values for all 16 pins on this MCP
     uint16_t io_value = mcp23017[mcp].readGPIOAB();
     
-    // Show port animations
-//    rack32.updateDisplayPorts(mcp, io_value);
-
     // Check for any input events
     if (mcp == MCP_INPUT_INDEX)
     {
@@ -267,7 +270,7 @@ void outputConfigSchema(JsonVariant json)
   JsonObject index = properties.createNestedObject("index");
   index["type"] = "integer";
   index["minimum"] = 1;
-  index["maximum"] = getMaxIndex();
+  index["maximum"] = getInaCount();
 
   // TODO: over current thresholds?
 
@@ -327,7 +330,7 @@ void outputCommandSchema(JsonVariant json)
   JsonObject index = properties.createNestedObject("index");
   index["type"] = "integer";
   index["minimum"] = 1;
-  index["maximum"] = getMaxIndex();
+  index["maximum"] = getInaCount();
 
   JsonObject command = properties.createNestedObject("command");
   command["type"] = "string";
@@ -384,10 +387,16 @@ void jsonOutputCommand(JsonVariant json)
   }
 }
 
-uint8_t getMaxIndex()
+uint8_t getInaCount()
 {
-  // Remember our indexes are 1-based
-  return MCP_PIN_COUNT;  
+  // Count how many INA260s were found
+  uint8_t inaCount = 0;
+  for (uint8_t ina = 0; ina < INA_COUNT; ina++)
+  {
+    if (bitRead(g_inasFound, ina) != 0) { inaCount++; }
+  }
+
+  return inaCount;
 }
 
 uint8_t getIndex(JsonVariant json)
@@ -401,7 +410,7 @@ uint8_t getIndex(JsonVariant json)
   uint8_t index = json["index"].as<uint8_t>();
   
   // Check the index is valid for this device
-  if (index <= 0 || index > getMaxIndex())
+  if (index <= 0 || index > getInaCount())
   {
     Serial.println(F("[pdu ] invalid index"));
     return 0;
@@ -476,6 +485,9 @@ void outputEvent(uint8_t id, uint8_t output, uint8_t type, uint8_t state)
   // Update the MCP pin - i.e. turn the relay on/off
   mcp23017[id].digitalWrite(output, state);
 
+  // Update the display
+  setBarState(output, state == RELAY_ON ? STATE_ON : STATE_OFF);
+
   // Publish the event
   publishOutputEvent(output, type, state);
 }
@@ -549,4 +561,62 @@ void scanI2CBus()
       Serial.println(F("empty"));
     }
   }
+}
+
+/**
+  Rack32 and LCD
+ */
+void setupRack32()
+{
+  // Start Rack32 hardware
+  OXRS_LCD* oxrsLcd = rack32.begin(jsonConfig, jsonCommand);
+
+  // Override standard screen config - hide MAC address
+  oxrsLcd->setIPpos(45);
+  oxrsLcd->setMACpos(0);
+  oxrsLcd->setMQTTpos(60);
+  oxrsLcd->setTEMPpos(75);
+
+  // How many INA260s did we find?
+  uint8_t inaCount = getInaCount();
+  
+  // Sanity check
+  if (inaCount > MAX_HBAR_COUNT)
+  {
+    inaCount = MAX_HBAR_COUNT;
+  }
+  
+  // Initialise a bar for each INA260
+  uint8_t y = 95;
+  for (int bar = 0; bar < inaCount; bar++)
+  {
+    hBar[bar].begin(oxrsLcd->getTft(), y, bar);
+    y += 14;
+  }
+
+  // Initialise a bar for the "T"otal
+  hBar[inaCount].begin(oxrsLcd->getTft(), y);
+}
+
+void setBarValue(int bar, float value)
+{
+  if (bar > MAX_HBAR_COUNT) { return; }
+
+  hBar[bar].setValue(value);
+}
+
+// state to be shown for bar (0-based) (OFF, ON, FAULT, ...)
+void setBarState(int bar, int state)
+{
+  if (bar > MAX_HBAR_COUNT) { return; }
+
+  hBar[bar].setState(state);
+}
+
+// sets the full scale value for bar (0-based) bar (if run time config desired)
+void setBarMaxValue(int bar, float value)
+{
+  if (bar > MAX_HBAR_COUNT) { return; }
+
+  hBar[bar].setMaxValue(value);
 }

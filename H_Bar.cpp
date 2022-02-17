@@ -1,21 +1,25 @@
 /*
- * inspired by 
- * https://forum.arduino.cc/t/tft_espi-new-example-for-animated-dials/643382/2
- * and
- * https://playground.arduino.cc/Main/Fscale/
+ * Inspired by 
+ *  https://forum.arduino.cc/t/tft_espi-new-example-for-animated-dials/643382/2
+ *  https://playground.arduino.cc/Main/Fscale/
  */
 
 #include "H_Bar.h"
 
-
-void H_Bar::begin(TFT_eSPI *tft, int channel, int y)
+void H_Bar::begin(TFT_eSPI *tft, int y, int index)
 {
   _tft = tft;
   _y = y;
-  _peak = -1;
-  _state = CHANNEL_NA;
-  _barMaxValue = BAR_MAX_VAL;
-  _drawChannelNumber(channel);
+  
+  if (index < 0)
+  {
+    _drawTotal();
+  }
+  else
+  {
+    _drawIndex(index);
+  }
+  
   _drawLinearMeter(0, BAR_X, y, BAR_W, BAR_H, BAR_GAP, BAR_SEGMENTS, GREEN2RED);
   _drawValue(0.0);
   _drawState(_state);
@@ -23,20 +27,22 @@ void H_Bar::begin(TFT_eSPI *tft, int channel, int y)
 
 void H_Bar::setValue(float value)
 {
-  int bar_val = (int)(BAR_SEGMENTS * value / _barMaxValue + .9);
+  int bar_val = (int)(BAR_SEGMENTS * value / _maxValue + .9);
+  
   _drawLinearMeter(bar_val, BAR_X, _y, BAR_W, BAR_H, BAR_GAP, BAR_SEGMENTS, GREEN2RED);
-  _drawValue (value);
+  _drawValue(value);
 }
 
 void H_Bar::setState(int state)
 {
   _state = state;
+  
   _drawState(_state);
 }
 
 void H_Bar::setMaxValue(float value)
 {
-  _barMaxValue = value;
+  _maxValue = value;
 }
 
 /*
@@ -106,54 +112,54 @@ uint16_t H_Bar::_rainbowColor(uint8_t spectrum)
   return red << 11 | green << 6 | blue;
 }
 
-void H_Bar::_drawChannelNumber(int channel)
+void H_Bar::_drawIndex(int index)
 {
   _tft->setTextFont(1);
   _tft->setTextDatum(TL_DATUM);
-  if(channel < 8)
-  {
-    _tft->drawNumber(channel+1, 0, _y+1);
-  }
-  else
-  {
-    _tft->drawString("T", 0, _y+1);
-  }
+  _tft->drawNumber(index+1, 0, _y+1);    
 }
 
-void H_Bar::_drawState (int state)
+void H_Bar::_drawTotal()
+{
+  _tft->setTextFont(1);
+  _tft->setTextDatum(TL_DATUM);
+  _tft->drawString("T", 0, _y+1);
+}
+
+void H_Bar::_drawState(int state)
 {
   _tft->setTextFont(1);
   _tft->setTextDatum(TL_DATUM);
   switch (state)
   {
-    case CHANNEL_NA:
+    case STATE_NA:
       _tft->setTextColor(TFT_WHITE);
       _tft->fillRect(190, _y, 40, 9, TFT_DARKGREY);
       _tft->drawString("N/A", 195, _y+1); 
       _peak = -1;
       break;
-    case CHANNEL_OFF:
+    case STATE_OFF:
       _tft->setTextColor(TFT_WHITE);
       _tft->fillRect(190, _y, 40, 9, TFT_DARKGREY);
       _tft->drawString("OFF", 195, _y+1); 
       _peak = -1;
       break;
-    case CHANNEL_ON:
+    case STATE_ON:
       _tft->setTextColor(TFT_BLACK);
       _tft->fillRect(190, _y, 40, 9, TFT_GREEN);
       _tft->drawString("ON", 195, _y+1); 
       break;
-    case CHANNEL_FAULT:
+    case STATE_ALERT:
       _tft->setTextColor(TFT_WHITE);
       _tft->fillRect(190, _y, 40, 9, TFT_RED);
-      _tft->drawString("FAULT", 195, _y+1); 
+      _tft->drawString("ALERT", 195, _y+1); 
       _drawLinearMeter(BAR_SEGMENTS, BAR_X, _y, BAR_W, BAR_H, BAR_GAP, BAR_SEGMENTS, SOLID_RED);
       break;
    }
   _tft->setTextColor(TFT_WHITE);
 }
 
-void H_Bar::_drawValue (float val)
+void H_Bar::_drawValue(float val)
 {
   uint8_t actualDatum = _tft->getTextDatum();
   _tft->setTextFont(1);

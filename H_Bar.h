@@ -8,7 +8,7 @@
 
 #include <TFT_eSPI.h>               // Hardware-specific library
 
-// single bar definitions
+// Single bar definitions
 #define BAR_X         8
 #define BAR_W         4
 #define BAR_H         9
@@ -21,38 +21,41 @@
 #define SOLID_GREEN 1
 #define GREEN2RED   2
 
-// channel state
-#define CHANNEL_NA    0
-#define CHANNEL_OFF   1
-#define CHANNEL_ON    2
-#define CHANNEL_FAULT 3
+// Channel state
+#define STATE_NA    0
+#define STATE_OFF   1
+#define STATE_ON    2
+#define STATE_ALERT 3
 
 class H_Bar
 {
   public:
     H_Bar(void){};
-    void begin(TFT_eSPI *tft, int channel, int y);
+    
+    // index = -1 for "T"otal bar
+    void begin(TFT_eSPI *tft, int y, int index = -1);
+
     void setValue(float value);
     void setState(int state);
     void setMaxValue(float value);
 
-
   private:  
     TFT_eSPI *_tft;
-
-    float _peak;
     int   _y;
-    int   _state;
-    float _barMaxValue;
 
+    float _peak = -1;
+    int   _state = STATE_NA;
+    float _maxValue = BAR_MAX_VAL;
+
+    void _drawIndex(int index);
+    void _drawTotal();
+    
     void _drawLinearMeter(int val, int x, int y, int w, int h, int g, int n, byte s);
-    void _drawChannelNumber(int channel);
     void _drawState(int state);
     void _drawValue(float val);
     
     uint16_t  _rainbowColor(uint8_t spectrum);
     float     _fscale( float inputValue, float originalMin, float originalMax, float newBegin, float newEnd, float curve);
- 
 };
 
 #endif
