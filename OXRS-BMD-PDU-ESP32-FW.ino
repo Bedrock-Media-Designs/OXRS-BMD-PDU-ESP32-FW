@@ -27,7 +27,7 @@
 #define FW_NAME       "OXRS-BMD-PDU-ESP32-FW"
 #define FW_SHORT_NAME "Power Distribution Unit"
 #define FW_MAKER      "Bedrock Media Designs"
-#define FW_VERSION    "1.0.0-ALPHA2"
+#define FW_VERSION    "BETA-2"
 
 /*--------------------------- Libraries ----------------------------------*/
 #include <Adafruit_MCP23X17.h>        // For MCP23017 I/O buffers
@@ -36,7 +36,7 @@
 #include <OXRS_Input.h>               // For input handling
 #include <OXRS_Output.h>              // For output handling
 #include "logo.h"                     // Embedded maker logo
-#include "src\OXRS-BMD-PDU-LCD.h"
+#include "H_Bar.h"
 
 /*--------------------------- Constants ----------------------------------*/
 // Serial
@@ -63,6 +63,9 @@ const uint8_t MCP_COUNT             = sizeof(MCP_I2C_ADDRESS);
 // Speed up the I2C bus to get faster event handling
 #define       I2C_CLOCK_SPEED       400000L
 
+// Can only display a max of 8 horizontal bars (plus a "T"otal bar)
+#define       MAX_HBAR_COUNT        8
+
 // Default publish telemetry interval (5 seconds)
 #define       DEFAULT_PUBLISH_TELEMETRY_MS  5000
 
@@ -73,8 +76,15 @@ uint8_t g_mcpsFound = 0;
 
 // Publish telemetry data interval - extend or disable via the config
 // option "publishTelemetrySeconds" - zero to disable
-uint32_t g_publishTelemetryMs = DEFAULT_PUBLISH_TELEMETRY_MS;
-uint32_t g_lastPublishTelemetry = 0L;
+uint32_t g_publishTelemetry_ms    = DEFAULT_PUBLISH_TELEMETRY_MS;
+uint32_t g_lastPublishTelemetry   = 0L;
+
+// Supply voltage is limited to 12V only - we set limits at +/-2V
+uint32_t g_supplyVoltage_mV       = 12000L;
+uint32_t g_supplyVoltageDelta_mV  = 2000L;
+
+// Current limit is configurable for combined and individual outputs
+uint32_t g_overCurrentLimit_mA    = 10000L;
 
 /*--------------------------- Global Objects -----------------------------*/
 // Rack32 handler
@@ -90,10 +100,8 @@ Adafruit_MCP23X17 mcp23017[MCP_COUNT];
 OXRS_Output oxrsOutput;
 OXRS_Input oxrsInput;
 
-// pointer to default screen class
-OXRS_LCD* _defaultScreen;
-// custom screen class object
-OXRS_LCD_CUSTOM _customScreen = OXRS_LCD_CUSTOM();
+// Horizontal display bars (only display MAX_HBAR_COUNT + total bar)
+H_Bar hBar[INA_COUNT + 1];
 
 /*--------------------------- Program ------------------------------------*/
 /**
@@ -117,17 +125,10 @@ void setup()
   scanI2CBus();
 
   // Start Rack32 hardware
-  _defaultScreen = rack32.begin(jsonConfig, jsonCommand);
+  rack32.begin(jsonConfig, jsonCommand);
 
-  // configure default screen
-  _defaultScreen->setIPpos(45);
-  _defaultScreen->setMACpos(0);
-  _defaultScreen->setMQTTpos(60);
-  _defaultScreen->setTEMPpos(75);
- 
-  // Set up bar display
-  _customScreen.begin(_defaultScreen->getTft());
-  _customScreen.drawBars();
+  // Setup custom LCD
+  initialiseScreen();
   
   // Set up config/command schema (for self-discovery and adoption)
   setConfigSchema();
@@ -145,10 +146,21 @@ void loop()
   // Let Rack32 hardware handle any events etc
   rack32.loop();
 
+  // Process INA260 sensors
+  processInas();
+
+  // Process MCPs
+  processMcps();
+}
+
+void processInas()
+{
   float mA[INA_COUNT];
   float mV[INA_COUNT];
   float mW[INA_COUNT];
   bool alert[INA_COUNT];
+
+  float mATotal = 0;
 
   // Iterate through each of the INA260s found on the I2C bus
   for (uint8_t ina = 0; ina < INA_COUNT; ina++)
@@ -162,15 +174,49 @@ void loop()
     mW[ina] = ina260[ina].readPower();
     alert[ina] = ina260[ina].alertFunctionFlag();
 
-    _customScreen.setBarState(ina, CHANNEL_ON);
-    _customScreen.setBarValue(ina, mA[ina]);
+    // Check bus voltage limits
+    int voltageCheck = checkVoltageLimits(mV[ina]);
+    if (voltageCheck < 0)
+    {
+      // Under-voltage alert
+      alert[ina] = true;
+    }
+    else if (voltageCheck > 0)
+    {
+      // Over-voltage alert
+      alert[ina] = true;
+    }
     
-    // TODO: keep track of total power draw and check thresholds?
+    // Check for the alert state, i.e. current limit hit
+    if (alert[ina])
+    {
+      // Turn off relay if it is currently on (might have already 
+      // been shutoff but still in alerted state)
+      if (RELAY_ON == mcp23017[MCP_OUTPUT_INDEX].digitalRead(ina))
+      {
+        outputEvent(MCP_OUTPUT_INDEX, ina, RELAY, RELAY_OFF);
+      }
+
+      // Update the bar state to ALERT
+      setBarState(ina, STATE_ALERT);
+    }
+
+    // Update the bar value for this sensor
+    setBarValue(ina, mA[ina]);
+    
+    // Keep track of total current
+    mATotal += mA[ina];
   }
+
+  // Update the total bar
+  setBarValue(INA_COUNT, mATotal);
 
   // Publish telemetry data if required
   publishTelemetry(mA, mV, mW, alert);
+}
 
+void processMcps()
+{
   // Iterate through each of the MCP23017s found on the I2C bus
   for (uint8_t mcp = 0; mcp < MCP_COUNT; mcp++)
   {
@@ -186,9 +232,6 @@ void loop()
     // Read the values for all 16 pins on this MCP
     uint16_t io_value = mcp23017[mcp].readGPIOAB();
     
-    // Show port animations
-//    rack32.updateDisplayPorts(mcp, io_value);
-
     // Check for any input events
     if (mcp == MCP_INPUT_INDEX)
     {
@@ -197,13 +240,24 @@ void loop()
   }
 }
 
+int checkVoltageLimits(float mV)
+{
+  uint32_t underLimit_mV = g_supplyVoltage_mV - g_supplyVoltageDelta_mV;
+  uint32_t overLimit_mV = g_supplyVoltage_mV + g_supplyVoltageDelta_mV;
+
+  if (mV < underLimit_mV) { return -1; }
+  if (mV > overLimit_mV)  { return 1; }
+
+  return 0;
+}
+
 void publishTelemetry(float mA[], float mV[], float mW[], bool alert[])
 {
   // Ignore if publishing has been disabled
-  if (g_publishTelemetryMs == 0) { return; }
+  if (g_publishTelemetry_ms == 0) { return; }
 
   // Check if we are ready to publish
-  if ((millis() - g_lastPublishTelemetry) > g_publishTelemetryMs)
+  if ((millis() - g_lastPublishTelemetry) > g_publishTelemetry_ms)
   {
     DynamicJsonDocument telemetry(1024);
     JsonArray array = telemetry.to<JsonArray>();
@@ -248,6 +302,13 @@ void setConfigSchema()
   publishTelemetrySeconds["minimum"] = 0;
   publishTelemetrySeconds["maximum"] = 86400;
 
+  JsonObject overCurrentLimit = config.createNestedObject("overCurrentLimit");
+  overCurrentLimit["title"] = "Over Current Limit (mA)";
+  overCurrentLimit["description"] = "If the readings from all current sensors add up to more than this limit then shutdown all outputs (defaults to 10000mA or 10A). Must be a number between 1 and 15000 (i.e. 15A).";
+  overCurrentLimit["type"] = "integer";
+  overCurrentLimit["minimum"] = 1;
+  overCurrentLimit["maximum"] = 15000;
+
   outputConfigSchema(config);
 
   // Pass our config schema down to the Rack32 library
@@ -265,11 +326,18 @@ void outputConfigSchema(JsonVariant json)
   JsonObject properties = items.createNestedObject("properties");
 
   JsonObject index = properties.createNestedObject("index");
+  index["title"] = "Output";
+  index["description"] = "The index this configuration applies to (1-based.";
   index["type"] = "integer";
   index["minimum"] = 1;
-  index["maximum"] = getMaxIndex();
+  index["maximum"] = INA_COUNT;
 
-  // TODO: over current thresholds?
+  JsonObject overCurrentLimit = properties.createNestedObject("overCurrentLimit");
+  overCurrentLimit["title"] = "Over Current Limit (mA)";
+  overCurrentLimit["description"] = "If the reading from the current sensor on this output exceeds this limit then shutdown this output (defaults to 2000mA or 2A). Must be a number between 1 and 5000 (i.e. 5A).";
+  overCurrentLimit["type"] = "integer";
+  overCurrentLimit["minimum"] = 1;
+  overCurrentLimit["maximum"] = 5000;
 
   JsonArray required = items.createNestedArray("required");
   required.add("index");
@@ -279,7 +347,12 @@ void jsonConfig(JsonVariant json)
 {
   if (json.containsKey("publishTelemetrySeconds"))
   {
-    g_publishTelemetryMs = json["publishTelemetrySeconds"].as<uint32_t>() * 1000L;
+    g_publishTelemetry_ms = json["publishTelemetrySeconds"].as<uint32_t>() * 1000L;
+  }
+
+  if (json.containsKey("overCurrentLimit"))
+  {
+    g_overCurrentLimit_mA = json["overCurrentLimit"].as<uint32_t>();
   }
 
   if (json.containsKey("outputs"))
@@ -296,7 +369,18 @@ void jsonOutputConfig(JsonVariant json)
   uint8_t index = getIndex(json);
   if (index == 0) return;
 
-  // TODO: over current thresholds?
+  if (json.containsKey("overCurrentLimit"))
+  {
+    // TODO: need an internal datatype to store per-port limits and alert timers
+    //       so we can detect when we alert and not start shutting things down
+    //       till a grace period has elapsed
+
+    // TODO: set the over current limit in the INA260 itself then nothing to check
+    //       except the alert flag
+    
+    json["overCurrentLimit"].as<uint32_t>();
+  }
+
 }
 
 /**
@@ -327,7 +411,7 @@ void outputCommandSchema(JsonVariant json)
   JsonObject index = properties.createNestedObject("index");
   index["type"] = "integer";
   index["minimum"] = 1;
-  index["maximum"] = getMaxIndex();
+  index["maximum"] = INA_COUNT;
 
   JsonObject command = properties.createNestedObject("command");
   command["type"] = "string";
@@ -357,12 +441,15 @@ void jsonOutputCommand(JsonVariant json)
   uint8_t index = getIndex(json);
   if (index == 0) return;
 
+  // Index is 1-based
+  uint8_t pin = index - 1;
+  
   if (json.containsKey("command"))
   {
     if (json["command"].isNull() || strcmp(json["command"], "query") == 0)
     {
       // Publish a status event with the current state
-      uint8_t state = mcp23017[MCP_OUTPUT_INDEX].digitalRead(index);
+      uint8_t state = mcp23017[MCP_OUTPUT_INDEX].digitalRead(pin);
       publishOutputEvent(index, RELAY, state);
     }
     else
@@ -370,11 +457,11 @@ void jsonOutputCommand(JsonVariant json)
       // Send this command down to our output handler to process
       if (strcmp(json["command"], "on") == 0)
       {
-        oxrsOutput.handleCommand(MCP_OUTPUT_INDEX, index, RELAY_ON);
+        oxrsOutput.handleCommand(MCP_OUTPUT_INDEX, pin, RELAY_ON);
       }
       else if (strcmp(json["command"], "off") == 0)
       {
-        oxrsOutput.handleCommand(MCP_OUTPUT_INDEX, index, RELAY_OFF);
+        oxrsOutput.handleCommand(MCP_OUTPUT_INDEX, pin, RELAY_OFF);
       }
       else 
       {
@@ -382,12 +469,6 @@ void jsonOutputCommand(JsonVariant json)
       }
     }
   }
-}
-
-uint8_t getMaxIndex()
-{
-  // Remember our indexes are 1-based
-  return MCP_PIN_COUNT;  
 }
 
 uint8_t getIndex(JsonVariant json)
@@ -401,7 +482,7 @@ uint8_t getIndex(JsonVariant json)
   uint8_t index = json["index"].as<uint8_t>();
   
   // Check the index is valid for this device
-  if (index <= 0 || index > getMaxIndex())
+  if (index <= 0 || index > INA_COUNT)
   {
     Serial.println(F("[pdu ] invalid index"));
     return 0;
@@ -476,8 +557,11 @@ void outputEvent(uint8_t id, uint8_t output, uint8_t type, uint8_t state)
   // Update the MCP pin - i.e. turn the relay on/off
   mcp23017[id].digitalWrite(output, state);
 
-  // Publish the event
-  publishOutputEvent(output, type, state);
+  // Update the display
+  setBarState(output, state == RELAY_ON ? STATE_ON : STATE_OFF);
+
+  // Publish the event (index is 1-based)
+  publishOutputEvent(output + 1, type, state);
 }
 
 /**
@@ -549,4 +633,52 @@ void scanI2CBus()
       Serial.println(F("empty"));
     }
   }
+}
+
+/**
+  LCD
+ */
+void initialiseScreen()
+{
+  OXRS_LCD* screen = rack32.getLCD();
+  
+  // Override standard screen config - hide MAC address
+  screen->setIPpos(45);
+  screen->setMACpos(0);
+  screen->setMQTTpos(60);
+  screen->setTEMPpos(75);
+
+  // Initialise a bar for the first MAX_HBAR_COUNT sensors found
+  uint8_t barCount = 0;
+  uint8_t y = 95;
+  for (uint8_t ina = 0; ina < INA_COUNT; ina++)
+  {
+    if (bitRead(g_inasFound, ina) == 0)
+      continue;
+
+    if (barCount++ >= MAX_HBAR_COUNT)
+      continue;
+
+    // Display index is 1-based
+    hBar[ina].begin(screen->getTft(), y, ina + 1);    
+    y += 14;
+  }
+  
+  // Initialise a bar for the "T"otal
+  hBar[INA_COUNT].begin(screen->getTft(), y, 0);
+}
+
+void setBarValue(int ina, float value)
+{
+  hBar[ina].setValue(value);
+}
+
+void setBarState(int ina, int state)
+{
+  hBar[ina].setState(state);
+}
+
+void setBarMaxValue(int ina, float value)
+{
+  hBar[ina].setMaxValue(value);
 }
