@@ -488,6 +488,13 @@ uint8_t getIndex(JsonVariant json)
     return 0;
   }
 
+  // Check the index corresponds to an existing INA260 (index is 1-based)
+  if (bitRead(g_inasFound, index - 1) == 0)
+  {
+    Serial.println(F("[pdu ] invalid index, no INA260 found"));
+    return 0;
+  }
+  
   return index;
 }
 
@@ -547,6 +554,13 @@ void inputEvent(uint8_t id, uint8_t input, uint8_t type, uint8_t state)
 {
   uint8_t outputType = RELAY;
   uint8_t outputState = state == LOW_EVENT ? RELAY_ON : RELAY_OFF;
+
+  // Check the input corresponds to an existing INA260
+  if (bitRead(g_inasFound, input) == 0)
+  {
+    Serial.println(F("[pdu ] invalid input, no INA260 found"));
+    return;
+  }
   
   // Pass this event straight thru to the output handler, using same index
   outputEvent(MCP_OUTPUT_INDEX, input, outputType, outputState);
