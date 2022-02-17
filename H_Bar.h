@@ -32,8 +32,8 @@ class H_Bar
   public:
     H_Bar(void){};
     
-    // index = -1 for "T"otal bar
-    void begin(TFT_eSPI *tft, int y, int index = -1);
+    // Index is 1-based, set to 0 for "T"otal bar
+    void begin(TFT_eSPI *tft, int y, int index = 0);
 
     void setValue(float value);
     void setState(int state);

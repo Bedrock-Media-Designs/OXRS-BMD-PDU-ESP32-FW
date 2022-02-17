@@ -27,7 +27,7 @@
 #define FW_NAME       "OXRS-BMD-PDU-ESP32-FW"
 #define FW_SHORT_NAME "Power Distribution Unit"
 #define FW_MAKER      "Bedrock Media Designs"
-#define FW_VERSION    "BETA-1"
+#define FW_VERSION    "BETA-2"
 
 /*--------------------------- Libraries ----------------------------------*/
 #include <Adafruit_MCP23X17.h>        // For MCP23017 I/O buffers
@@ -93,8 +93,8 @@ Adafruit_MCP23X17 mcp23017[MCP_COUNT];
 OXRS_Output oxrsOutput;
 OXRS_Input oxrsInput;
 
-// Horizontal display bars (max bars + total bar)
-H_Bar hBar[MAX_HBAR_COUNT + 1];
+// Horizontal display bars (only display MAX_HBAR_COUNT + total bar)
+H_Bar hBar[INA_COUNT + 1];
 
 /*--------------------------- Program ------------------------------------*/
 /**
@@ -117,8 +117,11 @@ void setup()
   // Scan the I2C bus and set up current sensors and I/O buffers
   scanI2CBus();
 
-  // Start Rack32 hardware including custom LCD
-  setupRack32();
+  // Start Rack32 hardware
+  rack32.begin(jsonConfig, jsonCommand);
+
+  // Setup custom LCD
+  initialiseScreen();
   
   // Set up config/command schema (for self-discovery and adoption)
   setConfigSchema();
@@ -136,12 +139,20 @@ void loop()
   // Let Rack32 hardware handle any events etc
   rack32.loop();
 
+  // Process INA260 sensors
+  processInas();
+
+  // Process MCPs
+  processMcps();
+}
+
+void processInas()
+{
   float mA[INA_COUNT];
   float mV[INA_COUNT];
   float mW[INA_COUNT];
   bool alert[INA_COUNT];
 
-  uint8_t inaCount = 0;
   float mATotal = 0;
 
   // Iterate through each of the INA260s found on the I2C bus
@@ -156,27 +167,36 @@ void loop()
     mW[ina] = ina260[ina].readPower();
     alert[ina] = ina260[ina].alertFunctionFlag();
 
+    // Check for the alert state, i.e. current limit hit
     if (alert[ina])
     {
-      // TODO: need to check if the relay is already off here!
-      outputEvent(MCP_OUTPUT_INDEX, ina, RELAY, RELAY_OFF);
+      // Turn off relay if it is currently on (might have already 
+      // been shutoff but still in alerted state)
+      if (RELAY_ON == mcp23017[MCP_OUTPUT_INDEX].digitalRead(ina))
+      {
+        outputEvent(MCP_OUTPUT_INDEX, ina, RELAY, RELAY_OFF);
+      }
+
+      // Update the bar state to ALERT
       setBarState(ina, STATE_ALERT);
     }
 
-    // Update the bar for this sensor
+    // Update the bar value for this sensor
     setBarValue(ina, mA[ina]);
     
-    // keep track of total current
-    inaCount++;
+    // Keep track of total current
     mATotal += mA[ina];
   }
 
   // Update the total bar
-  setBarValue(inaCount, mATotal);
+  setBarValue(INA_COUNT, mATotal);
 
   // Publish telemetry data if required
   publishTelemetry(mA, mV, mW, alert);
+}
 
+void processMcps()
+{
   // Iterate through each of the MCP23017s found on the I2C bus
   for (uint8_t mcp = 0; mcp < MCP_COUNT; mcp++)
   {
@@ -270,7 +290,7 @@ void outputConfigSchema(JsonVariant json)
   JsonObject index = properties.createNestedObject("index");
   index["type"] = "integer";
   index["minimum"] = 1;
-  index["maximum"] = getInaCount();
+  index["maximum"] = INA_COUNT;
 
   // TODO: over current thresholds?
 
@@ -330,7 +350,7 @@ void outputCommandSchema(JsonVariant json)
   JsonObject index = properties.createNestedObject("index");
   index["type"] = "integer";
   index["minimum"] = 1;
-  index["maximum"] = getInaCount();
+  index["maximum"] = INA_COUNT;
 
   JsonObject command = properties.createNestedObject("command");
   command["type"] = "string";
@@ -360,12 +380,15 @@ void jsonOutputCommand(JsonVariant json)
   uint8_t index = getIndex(json);
   if (index == 0) return;
 
+  // Index is 1-based
+  uint8_t pin = index - 1;
+  
   if (json.containsKey("command"))
   {
     if (json["command"].isNull() || strcmp(json["command"], "query") == 0)
     {
       // Publish a status event with the current state
-      uint8_t state = mcp23017[MCP_OUTPUT_INDEX].digitalRead(index);
+      uint8_t state = mcp23017[MCP_OUTPUT_INDEX].digitalRead(pin);
       publishOutputEvent(index, RELAY, state);
     }
     else
@@ -373,11 +396,11 @@ void jsonOutputCommand(JsonVariant json)
       // Send this command down to our output handler to process
       if (strcmp(json["command"], "on") == 0)
       {
-        oxrsOutput.handleCommand(MCP_OUTPUT_INDEX, index, RELAY_ON);
+        oxrsOutput.handleCommand(MCP_OUTPUT_INDEX, pin, RELAY_ON);
       }
       else if (strcmp(json["command"], "off") == 0)
       {
-        oxrsOutput.handleCommand(MCP_OUTPUT_INDEX, index, RELAY_OFF);
+        oxrsOutput.handleCommand(MCP_OUTPUT_INDEX, pin, RELAY_OFF);
       }
       else 
       {
@@ -385,18 +408,6 @@ void jsonOutputCommand(JsonVariant json)
       }
     }
   }
-}
-
-uint8_t getInaCount()
-{
-  // Count how many INA260s were found
-  uint8_t inaCount = 0;
-  for (uint8_t ina = 0; ina < INA_COUNT; ina++)
-  {
-    if (bitRead(g_inasFound, ina) != 0) { inaCount++; }
-  }
-
-  return inaCount;
 }
 
 uint8_t getIndex(JsonVariant json)
@@ -410,7 +421,7 @@ uint8_t getIndex(JsonVariant json)
   uint8_t index = json["index"].as<uint8_t>();
   
   // Check the index is valid for this device
-  if (index <= 0 || index > getInaCount())
+  if (index <= 0 || index > INA_COUNT)
   {
     Serial.println(F("[pdu ] invalid index"));
     return 0;
@@ -488,8 +499,8 @@ void outputEvent(uint8_t id, uint8_t output, uint8_t type, uint8_t state)
   // Update the display
   setBarState(output, state == RELAY_ON ? STATE_ON : STATE_OFF);
 
-  // Publish the event
-  publishOutputEvent(output, type, state);
+  // Publish the event (index is 1-based)
+  publishOutputEvent(output + 1, type, state);
 }
 
 /**
@@ -564,59 +575,49 @@ void scanI2CBus()
 }
 
 /**
-  Rack32 and LCD
+  LCD
  */
-void setupRack32()
+void initialiseScreen()
 {
-  // Start Rack32 hardware
-  OXRS_LCD* oxrsLcd = rack32.begin(jsonConfig, jsonCommand);
-
+  OXRS_LCD* screen = rack32.getLCD();
+  
   // Override standard screen config - hide MAC address
-  oxrsLcd->setIPpos(45);
-  oxrsLcd->setMACpos(0);
-  oxrsLcd->setMQTTpos(60);
-  oxrsLcd->setTEMPpos(75);
+  screen->setIPpos(45);
+  screen->setMACpos(0);
+  screen->setMQTTpos(60);
+  screen->setTEMPpos(75);
 
-  // How many INA260s did we find?
-  uint8_t inaCount = getInaCount();
-  
-  // Sanity check
-  if (inaCount > MAX_HBAR_COUNT)
-  {
-    inaCount = MAX_HBAR_COUNT;
-  }
-  
-  // Initialise a bar for each INA260
+  // Initialise a bar for the first MAX_HBAR_COUNT sensors found
+  uint8_t barCount = 0;
   uint8_t y = 95;
-  for (int bar = 0; bar < inaCount; bar++)
+  for (uint8_t ina = 0; ina < INA_COUNT; ina++)
   {
-    hBar[bar].begin(oxrsLcd->getTft(), y, bar);
+    if (bitRead(g_inasFound, ina) == 0)
+      continue;
+
+    if (barCount++ >= MAX_HBAR_COUNT)
+      continue;
+
+    // Display index is 1-based
+    hBar[ina].begin(screen->getTft(), y, ina + 1);    
     y += 14;
   }
-
+  
   // Initialise a bar for the "T"otal
-  hBar[inaCount].begin(oxrsLcd->getTft(), y);
+  hBar[INA_COUNT].begin(screen->getTft(), y, 0);
 }
 
-void setBarValue(int bar, float value)
+void setBarValue(int ina, float value)
 {
-  if (bar > MAX_HBAR_COUNT) { return; }
-
-  hBar[bar].setValue(value);
+  hBar[ina].setValue(value);
 }
 
-// state to be shown for bar (0-based) (OFF, ON, FAULT, ...)
-void setBarState(int bar, int state)
+void setBarState(int ina, int state)
 {
-  if (bar > MAX_HBAR_COUNT) { return; }
-
-  hBar[bar].setState(state);
+  hBar[ina].setState(state);
 }
 
-// sets the full scale value for bar (0-based) bar (if run time config desired)
-void setBarMaxValue(int bar, float value)
+void setBarMaxValue(int ina, float value)
 {
-  if (bar > MAX_HBAR_COUNT) { return; }
-
-  hBar[bar].setMaxValue(value);
+  hBar[ina].setMaxValue(value);
 }

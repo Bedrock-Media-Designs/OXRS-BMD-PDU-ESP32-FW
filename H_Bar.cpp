@@ -10,8 +10,9 @@ void H_Bar::begin(TFT_eSPI *tft, int y, int index)
 {
   _tft = tft;
   _y = y;
-  
-  if (index < 0)
+
+  // Index is 1-based, set to 0 for "T"otal bar
+  if (index == 0)
   {
     _drawTotal();
   }
@@ -116,7 +117,7 @@ void H_Bar::_drawIndex(int index)
 {
   _tft->setTextFont(1);
   _tft->setTextDatum(TL_DATUM);
-  _tft->drawNumber(index+1, 0, _y+1);    
+  _tft->drawNumber(index, 0, _y+1);    
 }
 
 void H_Bar::_drawTotal()
