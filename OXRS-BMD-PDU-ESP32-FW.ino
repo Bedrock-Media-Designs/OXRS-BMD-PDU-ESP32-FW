@@ -76,8 +76,15 @@ uint8_t g_mcpsFound = 0;
 
 // Publish telemetry data interval - extend or disable via the config
 // option "publishTelemetrySeconds" - zero to disable
-uint32_t g_publishTelemetryMs = DEFAULT_PUBLISH_TELEMETRY_MS;
-uint32_t g_lastPublishTelemetry = 0L;
+uint32_t g_publishTelemetry_ms    = DEFAULT_PUBLISH_TELEMETRY_MS;
+uint32_t g_lastPublishTelemetry   = 0L;
+
+// Supply voltage is limited to 12V only - we set limits at +/-2V
+uint32_t g_supplyVoltage_mV       = 12000L;
+uint32_t g_supplyVoltageDelta_mV  = 2000L;
+
+// Current limit is configurable for combined and individual outputs
+uint32_t g_overCurrentLimit_mA    = 10000L;
 
 /*--------------------------- Global Objects -----------------------------*/
 // Rack32 handler
@@ -167,6 +174,19 @@ void processInas()
     mW[ina] = ina260[ina].readPower();
     alert[ina] = ina260[ina].alertFunctionFlag();
 
+    // Check bus voltage limits
+    int voltageCheck = checkVoltageLimits(mV[ina]);
+    if (voltageCheck < 0)
+    {
+      // Under-voltage alert
+      alert[ina] = true;
+    }
+    else if (voltageCheck > 0)
+    {
+      // Over-voltage alert
+      alert[ina] = true;
+    }
+    
     // Check for the alert state, i.e. current limit hit
     if (alert[ina])
     {
@@ -220,13 +240,24 @@ void processMcps()
   }
 }
 
+int checkVoltageLimits(float mV)
+{
+  uint32_t underLimit_mV = g_supplyVoltage_mV - g_supplyVoltageDelta_mV;
+  uint32_t overLimit_mV = g_supplyVoltage_mV + g_supplyVoltageDelta_mV;
+
+  if (mV < underLimit_mV) { return -1; }
+  if (mV > overLimit_mV)  { return 1; }
+
+  return 0;
+}
+
 void publishTelemetry(float mA[], float mV[], float mW[], bool alert[])
 {
   // Ignore if publishing has been disabled
-  if (g_publishTelemetryMs == 0) { return; }
+  if (g_publishTelemetry_ms == 0) { return; }
 
   // Check if we are ready to publish
-  if ((millis() - g_lastPublishTelemetry) > g_publishTelemetryMs)
+  if ((millis() - g_lastPublishTelemetry) > g_publishTelemetry_ms)
   {
     DynamicJsonDocument telemetry(1024);
     JsonArray array = telemetry.to<JsonArray>();
@@ -271,6 +302,13 @@ void setConfigSchema()
   publishTelemetrySeconds["minimum"] = 0;
   publishTelemetrySeconds["maximum"] = 86400;
 
+  JsonObject overCurrentLimit = config.createNestedObject("overCurrentLimit");
+  overCurrentLimit["title"] = "Over Current Limit (mA)";
+  overCurrentLimit["description"] = "If the readings from all current sensors add up to more than this limit then shutdown all outputs (defaults to 10000mA or 10A). Must be a number between 1 and 15000 (i.e. 15A).";
+  overCurrentLimit["type"] = "integer";
+  overCurrentLimit["minimum"] = 1;
+  overCurrentLimit["maximum"] = 15000;
+
   outputConfigSchema(config);
 
   // Pass our config schema down to the Rack32 library
@@ -288,11 +326,18 @@ void outputConfigSchema(JsonVariant json)
   JsonObject properties = items.createNestedObject("properties");
 
   JsonObject index = properties.createNestedObject("index");
+  index["title"] = "Output";
+  index["description"] = "The index this configuration applies to (1-based.";
   index["type"] = "integer";
   index["minimum"] = 1;
   index["maximum"] = INA_COUNT;
 
-  // TODO: over current thresholds?
+  JsonObject overCurrentLimit = properties.createNestedObject("overCurrentLimit");
+  overCurrentLimit["title"] = "Over Current Limit (mA)";
+  overCurrentLimit["description"] = "If the reading from the current sensor on this output exceeds this limit then shutdown this output (defaults to 2000mA or 2A). Must be a number between 1 and 5000 (i.e. 5A).";
+  overCurrentLimit["type"] = "integer";
+  overCurrentLimit["minimum"] = 1;
+  overCurrentLimit["maximum"] = 5000;
 
   JsonArray required = items.createNestedArray("required");
   required.add("index");
@@ -302,7 +347,12 @@ void jsonConfig(JsonVariant json)
 {
   if (json.containsKey("publishTelemetrySeconds"))
   {
-    g_publishTelemetryMs = json["publishTelemetrySeconds"].as<uint32_t>() * 1000L;
+    g_publishTelemetry_ms = json["publishTelemetrySeconds"].as<uint32_t>() * 1000L;
+  }
+
+  if (json.containsKey("overCurrentLimit"))
+  {
+    g_overCurrentLimit_mA = json["overCurrentLimit"].as<uint32_t>();
   }
 
   if (json.containsKey("outputs"))
@@ -319,7 +369,18 @@ void jsonOutputConfig(JsonVariant json)
   uint8_t index = getIndex(json);
   if (index == 0) return;
 
-  // TODO: over current thresholds?
+  if (json.containsKey("overCurrentLimit"))
+  {
+    // TODO: need an internal datatype to store per-port limits and alert timers
+    //       so we can detect when we alert and not start shutting things down
+    //       till a grace period has elapsed
+
+    // TODO: set the over current limit in the INA260 itself then nothing to check
+    //       except the alert flag
+    
+    json["overCurrentLimit"].as<uint32_t>();
+  }
+
 }
 
 /**
