@@ -34,6 +34,11 @@ void H_Bar::setValue(float value)
   _drawValue(value);
 }
 
+void H_Bar::setVolt(float value)
+{
+  _drawVolt(value);
+}
+
 void H_Bar::setState(int state)
 {
   _state = state;
@@ -129,32 +134,33 @@ void H_Bar::_drawTotal()
 
 void H_Bar::_drawState(int state)
 {
+  int x = 205;
   _tft->setTextFont(1);
   _tft->setTextDatum(TL_DATUM);
   switch (state)
   {
     case STATE_NA:
       _tft->setTextColor(TFT_WHITE);
-      _tft->fillRect(190, _y, 40, 9, TFT_DARKGREY);
-      _tft->drawString("N/A", 195, _y+1); 
+      _tft->fillRect(x, _y, 40, 9, TFT_DARKGREY);
+      _tft->drawString("N/A", x+3, _y+1); 
       _peak = -1;
       break;
     case STATE_OFF:
       _tft->setTextColor(TFT_WHITE);
-      _tft->fillRect(190, _y, 40, 9, TFT_DARKGREY);
-      _tft->drawString("OFF", 195, _y+1); 
+      _tft->fillRect(x, _y, 40, 9, TFT_DARKGREY);
+      _tft->drawString("OFF", x+3, _y+1); 
       _peak = -1;
       break;
     case STATE_ON:
       _tft->setTextColor(TFT_BLACK);
-      _tft->fillRect(190, _y, 40, 9, TFT_GREEN);
-      _tft->drawString("ON", 195, _y+1); 
+      _tft->fillRect(x, _y, 40, 9, TFT_GREEN);
+      _tft->drawString("ON", x+3, _y+1); 
       break;
     case STATE_ALERT:
       _tft->setTextColor(TFT_WHITE);
-      _tft->fillRect(190, _y, 40, 9, TFT_RED);
-      _tft->drawString("ALERT", 195, _y+1); 
-      _drawLinearMeter(BAR_SEGMENTS, BAR_X, _y, BAR_W, BAR_H, BAR_GAP, BAR_SEGMENTS, SOLID_RED);
+      _tft->fillRect(x, _y, 40, 9, TFT_RED);
+      _tft->drawString("ALERT", x+3, _y+1); 
+//      _drawLinearMeter(BAR_SEGMENTS, BAR_X, _y, BAR_W, BAR_H, BAR_GAP, BAR_SEGMENTS, SOLID_RED);
       break;
    }
   _tft->setTextColor(TFT_WHITE);
@@ -162,11 +168,32 @@ void H_Bar::_drawState(int state)
 
 void H_Bar::_drawValue(float val)
 {
+  int x = 150;
   uint8_t actualDatum = _tft->getTextDatum();
+  val /= 1000.0;
   _tft->setTextFont(1);
-  _tft->fillRect(180-45, _y, 45, 9, TFT_BLACK);
+  _tft->fillRect(x-25, _y, 25, 9, TFT_BLACK);
   _tft->setTextDatum(TR_DATUM);
-  _tft->drawFloat(val, 2, 180, _y+1);
+  int decimals = (val <= 9.999) ? 3 : 2;
+  decimals = 2;
+  _tft->drawFloat(val, decimals, x, _y+1);
+  _tft->setTextDatum(TL_DATUM);
+  _tft->drawString("A", x+2, _y+1); 
+  _tft->setTextDatum(actualDatum);
+}
+
+void H_Bar::_drawVolt(float val)
+{
+  int x = 150+40;
+  uint8_t actualDatum = _tft->getTextDatum();
+  val /= 1000.0;
+  _tft->setTextFont(1);
+  _tft->fillRect(x-25, _y, 25, 9, TFT_BLACK);
+  _tft->setTextDatum(TR_DATUM);
+  _tft->drawFloat(val, 1, x, _y+1);
+  _tft->setTextDatum(TL_DATUM);
+  _tft->drawString("V", x+2, _y+1); 
+  _tft->setTextDatum(actualDatum);
   _tft->setTextDatum(actualDatum);
 }
 

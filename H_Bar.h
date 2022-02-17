@@ -12,7 +12,7 @@
 #define BAR_X         8
 #define BAR_W         4
 #define BAR_H         9
-#define BAR_GAP       2
+#define BAR_GAP       1
 #define BAR_SEGMENTS  20 
 #define BAR_MAX_VAL   1000.0
 
@@ -38,6 +38,7 @@ class H_Bar
     void setValue(float value);
     void setState(int state);
     void setMaxValue(float value);
+    void setVolt(float value);
 
   private:  
     TFT_eSPI *_tft;
@@ -53,6 +54,7 @@ class H_Bar
     void _drawLinearMeter(int val, int x, int y, int w, int h, int g, int n, byte s);
     void _drawState(int state);
     void _drawValue(float val);
+    void _drawVolt(float val);
     
     uint16_t  _rainbowColor(uint8_t spectrum);
     float     _fscale( float inputValue, float originalMin, float originalMax, float newBegin, float newEnd, float curve);

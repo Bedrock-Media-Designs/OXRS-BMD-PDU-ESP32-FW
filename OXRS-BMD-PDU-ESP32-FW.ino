@@ -203,6 +203,7 @@ void processInas()
 
     // Update the bar value for this sensor
     setBarValue(ina, mA[ina]);
+    setBarVolt(ina, mV[ina]);
     
     // Keep track of total current
     mATotal += mA[ina];
@@ -671,6 +672,11 @@ void initialiseScreen()
 void setBarValue(int ina, float value)
 {
   hBar[ina].setValue(value);
+}
+
+void setBarVolt(int ina, float value)
+{
+  hBar[ina].setVolt(value);
 }
 
 void setBarState(int ina, int state)
