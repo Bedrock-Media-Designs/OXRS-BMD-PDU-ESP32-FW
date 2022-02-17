@@ -201,16 +201,15 @@ void processInas()
       setBarState(ina, STATE_ALERT);
     }
 
-    // Update the bar value for this sensor
-    setBarValue(ina, mA[ina]);
-    setBarVolt(ina, mV[ina]);
+    // Update the display for this sensor
+    setBarValue(ina, mA[ina], mV[ina]);
     
     // Keep track of total current
     mATotal += mA[ina];
   }
 
-  // Update the total bar
-  setBarValue(INA_COUNT, mATotal);
+  // Update the display total
+  setBarValue(INA_COUNT, mATotal, NAN);
 
   // Publish telemetry data if required
   publishTelemetry(mA, mV, mW, alert);
@@ -669,14 +668,9 @@ void initialiseScreen()
   hBar[INA_COUNT].begin(screen->getTft(), y, 0);
 }
 
-void setBarValue(int ina, float value)
+void setBarValue(int ina, float mA, float mV)
 {
-  hBar[ina].setValue(value);
-}
-
-void setBarVolt(int ina, float value)
-{
-  hBar[ina].setVolt(value);
+  hBar[ina].setValue(mA, mV);
 }
 
 void setBarState(int ina, int state)
@@ -684,7 +678,7 @@ void setBarState(int ina, int state)
   hBar[ina].setState(state);
 }
 
-void setBarMaxValue(int ina, float value)
+void setBarMaxValue(int ina, float mA)
 {
-  hBar[ina].setMaxValue(value);
+  hBar[ina].setMaxValue(mA);
 }
