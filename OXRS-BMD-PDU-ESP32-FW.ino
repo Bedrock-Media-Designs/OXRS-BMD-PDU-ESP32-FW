@@ -27,7 +27,7 @@
 #define FW_NAME       "OXRS-BMD-PDU-ESP32-FW"
 #define FW_SHORT_NAME "Power Distribution Unit"
 #define FW_MAKER      "Bedrock Media Designs"
-#define FW_VERSION    "BETA-3"
+#define FW_VERSION    "BETA-4"
 
 /*--------------------------- Libraries ----------------------------------*/
 #include <Adafruit_MCP23X17.h>        // For MCP23017 I/O buffers
@@ -66,17 +66,14 @@ const uint8_t MCP_COUNT             = sizeof(MCP_I2C_ADDRESS);
 // Can only display a max of 8 horizontal bars (plus a "T"otal bar)
 #define       MAX_HBAR_COUNT        8
 
-// Default publish telemetry interval (5 seconds)
-#define       DEFAULT_PUBLISH_TELEMETRY_MS  5000
-
 /*--------------------------- Global Variables ---------------------------*/
 // Each bit corresponds to a device found on the IC2 bus
 uint8_t g_inasFound = 0;
 uint8_t g_mcpsFound = 0;
 
 // Publish telemetry data interval - extend or disable via the config
-// option "publishTelemetrySeconds" - zero to disable
-uint32_t g_publishTelemetry_ms    = DEFAULT_PUBLISH_TELEMETRY_MS;
+// option "publishTelemetrySeconds" - default to 5s, zero to disable
+uint32_t g_publishTelemetry_ms    = 5000L;
 uint32_t g_lastPublishTelemetry   = 0L;
 
 // Supply voltage is limited to 12V only - we set limits at +/-2V
@@ -102,6 +99,11 @@ OXRS_Input oxrsInput;
 
 // Horizontal display bars (only display MAX_HBAR_COUNT + total bar)
 H_Bar hBar[INA_COUNT + 1];
+
+// TODO: need an internal datatype to store per-port limits and alert timers
+//       so we can detect when we alert and not start shutting things down
+//       till a grace period has elapsed
+
 
 /*--------------------------- Program ------------------------------------*/
 /**
@@ -302,12 +304,12 @@ void setConfigSchema()
   publishTelemetrySeconds["minimum"] = 0;
   publishTelemetrySeconds["maximum"] = 86400;
 
-  JsonObject overCurrentLimit = config.createNestedObject("overCurrentLimit");
-  overCurrentLimit["title"] = "Over Current Limit (mA)";
-  overCurrentLimit["description"] = "If the readings from all current sensors add up to more than this limit then shutdown all outputs (defaults to 10000mA or 10A). Must be a number between 1 and 15000 (i.e. 15A).";
-  overCurrentLimit["type"] = "integer";
-  overCurrentLimit["minimum"] = 1;
-  overCurrentLimit["maximum"] = 15000;
+  JsonObject overCurrentLimitMilliAmps = config.createNestedObject("overCurrentLimitMilliAmps");
+  overCurrentLimitMilliAmps["title"] = "Over Current Limit (mA)";
+  overCurrentLimitMilliAmps["description"] = "If the readings from all current sensors add up to more than this limit then shutdown all outputs (defaults to 10000mA or 10A). Must be a number between 1 and 15000 (i.e. 15A).";
+  overCurrentLimitMilliAmps["type"] = "integer";
+  overCurrentLimitMilliAmps["minimum"] = 1;
+  overCurrentLimitMilliAmps["maximum"] = 15000;
 
   outputConfigSchema(config);
 
@@ -327,17 +329,17 @@ void outputConfigSchema(JsonVariant json)
 
   JsonObject index = properties.createNestedObject("index");
   index["title"] = "Output";
-  index["description"] = "The index this configuration applies to (1-based.";
+  index["description"] = "The index this configuration applies to (1-based).";
   index["type"] = "integer";
   index["minimum"] = 1;
   index["maximum"] = INA_COUNT;
 
-  JsonObject overCurrentLimit = properties.createNestedObject("overCurrentLimit");
-  overCurrentLimit["title"] = "Over Current Limit (mA)";
-  overCurrentLimit["description"] = "If the reading from the current sensor on this output exceeds this limit then shutdown this output (defaults to 2000mA or 2A). Must be a number between 1 and 5000 (i.e. 5A).";
-  overCurrentLimit["type"] = "integer";
-  overCurrentLimit["minimum"] = 1;
-  overCurrentLimit["maximum"] = 5000;
+  JsonObject overCurrentLimitMilliAmps = properties.createNestedObject("overCurrentLimitMilliAmps");
+  overCurrentLimitMilliAmps["title"] = "Over Current Limit (mA)";
+  overCurrentLimitMilliAmps["description"] = "If the reading from the current sensor on this output exceeds this limit then shutdown this output (defaults to 2000mA or 2A). Must be a number between 1 and 5000 (i.e. 5A).";
+  overCurrentLimitMilliAmps["type"] = "integer";
+  overCurrentLimitMilliAmps["minimum"] = 1;
+  overCurrentLimitMilliAmps["maximum"] = 5000;
 
   JsonArray required = items.createNestedArray("required");
   required.add("index");
@@ -350,9 +352,9 @@ void jsonConfig(JsonVariant json)
     g_publishTelemetry_ms = json["publishTelemetrySeconds"].as<uint32_t>() * 1000L;
   }
 
-  if (json.containsKey("overCurrentLimit"))
+  if (json.containsKey("overCurrentLimitMilliAmps"))
   {
-    g_overCurrentLimit_mA = json["overCurrentLimit"].as<uint32_t>();
+    g_overCurrentLimit_mA = json["overCurrentLimitMilliAmps"].as<uint32_t>();
   }
 
   if (json.containsKey("outputs"))
@@ -369,18 +371,13 @@ void jsonOutputConfig(JsonVariant json)
   uint8_t index = getIndex(json);
   if (index == 0) return;
 
-  if (json.containsKey("overCurrentLimit"))
+  // Index is 1-based
+  uint8_t ina = index - 1;
+  
+  if (json.containsKey("overCurrentLimitMilliAmps"))
   {
-    // TODO: need an internal datatype to store per-port limits and alert timers
-    //       so we can detect when we alert and not start shutting things down
-    //       till a grace period has elapsed
-
-    // TODO: set the over current limit in the INA260 itself then nothing to check
-    //       except the alert flag
-    
-    json["overCurrentLimit"].as<uint32_t>();
+    ina260[ina].setAlertLimit(json["overCurrentLimitMilliAmps"].as<uint32_t>());    
   }
-
 }
 
 /**
@@ -603,6 +600,10 @@ void scanI2CBus()
       // Set the time over which to measure the current and bus voltage
       ina260[ina].setVoltageConversionTime(DEFAULT_CONVERSION_TIME);
       ina260[ina].setCurrentConversionTime(DEFAULT_CONVERSION_TIME);
+
+      // Default the over current alert at 2000mA (2A)
+      ina260[ina].setAlertType(INA260_ALERT_OVERCURRENT);
+      ina260[ina].setAlertLimit(2000);
     }
     else
     {
