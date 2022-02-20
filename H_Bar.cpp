@@ -45,7 +45,7 @@ void H_Bar::setValue(float mA, float mV)
   _drawMeter(bar_mA, BAR_X, _y, BAR_W, BAR_H, BAR_GAP, BAR_SEGMENTS, GREEN2RED);
   _drawValue(mA / 1000.0, VALUE_X_A, DP_A, "A");
 
-  if (mV != NAN)
+  if (!isnan(mV))
   {
     _drawValue(mV / 1000.0, VALUE_X_V, DP_V, "V");
   }
@@ -146,16 +146,12 @@ void H_Bar::_drawTotal()
 
 void H_Bar::_drawValue(float value, int x, int dp, const char * units)
 {
-  uint8_t actualDatum = _tft->getTextDatum();
-
-  _tft->setTextFont(1);
   _tft->fillRect(x-25, _y, VALUE_W, VALUE_H, TFT_BLACK);
+  _tft->setTextFont(1);
   _tft->setTextDatum(TR_DATUM);
   _tft->drawFloat(value, dp, x, _y+1);
   _tft->setTextDatum(TL_DATUM);
   _tft->drawString(units, x+2, _y+1); 
-  _tft->setTextDatum(actualDatum);
-  _tft->setTextDatum(actualDatum);
 }
 
 void H_Bar::_drawState(int state)
