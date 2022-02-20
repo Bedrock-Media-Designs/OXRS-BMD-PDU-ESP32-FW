@@ -45,7 +45,7 @@ void H_Bar::setValue(float mA, float mV)
   _drawMeter(bar_mA, BAR_X, _y, BAR_W, BAR_H, BAR_GAP, BAR_SEGMENTS, GREEN2RED);
   _drawValue(mA / 1000.0, VALUE_X_A, DP_A, "A");
 
-  if (mV != NAN)
+  if (!isnan(mV))
   {
     _drawValue(mV / 1000.0, VALUE_X_V, DP_V, "V");
   }
