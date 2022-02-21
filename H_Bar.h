@@ -14,7 +14,7 @@
 #define BAR_H         9
 #define BAR_GAP       1
 #define BAR_SEGMENTS  20 
-#define BAR_MAX_MA    1000.0
+#define BAR_MAX_MA    2000.0
 
 // Value 'x' locations (current/volts)
 #define VALUE_X_A     150

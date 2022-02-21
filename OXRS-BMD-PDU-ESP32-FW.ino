@@ -27,7 +27,7 @@
 #define FW_NAME       "OXRS-BMD-PDU-ESP32-FW"
 #define FW_SHORT_NAME "Power Distribution Unit"
 #define FW_MAKER      "Bedrock Media Designs"
-#define FW_VERSION    "BETA-4"
+#define FW_VERSION    "BETA-5"
 
 /*--------------------------- Libraries ----------------------------------*/
 #include <Adafruit_MCP23X17.h>        // For MCP23017 I/O buffers
@@ -355,6 +355,7 @@ void jsonConfig(JsonVariant json)
   if (json.containsKey("overCurrentLimitMilliAmps"))
   {
     g_overCurrentLimit_mA = json["overCurrentLimitMilliAmps"].as<uint32_t>();
+    setBarMaxValue(INA_COUNT, g_overCurrentLimit_mA);
   }
 
   if (json.containsKey("outputs"))
@@ -376,7 +377,11 @@ void jsonOutputConfig(JsonVariant json)
   
   if (json.containsKey("overCurrentLimitMilliAmps"))
   {
-    ina260[ina].setAlertLimit(json["overCurrentLimitMilliAmps"].as<uint32_t>());    
+    uint32_t overCurrentLimit_mA = json["overCurrentLimitMilliAmps"].as<uint32_t>();
+
+    // Set the alert limit on the INA260 and re-scale the bar graph on the display
+    ina260[ina].setAlertLimit(overCurrentLimit_mA);
+    setBarMaxValue(ina, overCurrentLimit_mA);
   }
 }
 
