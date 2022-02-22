@@ -60,7 +60,7 @@ class H_Bar
     TFT_eSPI *_tft;
     int   _y;
 
-    int   _state   = STATE_NA;
+    int   _state   = STATE_OFF;
     float _peak_mA = -1;
     float _max_mA  = BAR_MAX_MA;
 
