@@ -44,7 +44,7 @@
 
 // INA260 setup (should we make this configurable?)
 const INA260_AveragingCount DEFAULT_AVERAGING_COUNT = INA260_COUNT_16;
-const INA260_ConversionTime DEFAULT_CONVERSION_TIME = INA260_TIME_140_us;
+const INA260_ConversionTime DEFAULT_CONVERSION_TIME = INA260_TIME_1_1_ms;
 
 // Can have up to 16x INA260s on a single I2C bus
 const byte    INA_I2C_ADDRESS[]     = { 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F };
@@ -66,6 +66,10 @@ const uint8_t MCP_COUNT             = sizeof(MCP_I2C_ADDRESS);
 // Can only display a max of 8 horizontal bars (plus a "T"otal bar)
 #define       MAX_HBAR_COUNT        8
 
+// Cycle time to read INAs (INA260_TIME_x * INA260_COUNT_x * 2 + margin)
+// set to 40ms (25Hz scan frequency)
+#define       INA_CYCLE_TIME        40L
+
 /*--------------------------- Global Variables ---------------------------*/
 // Each bit corresponds to a device found on the IC2 bus
 uint8_t g_inasFound = 0;
@@ -82,6 +86,9 @@ uint32_t g_supplyVoltageDelta_mV  = 2000L;
 
 // Current limit is configurable for combined and individual outputs
 uint32_t g_overCurrentLimit_mA    = 10000L;
+
+// Timer for INA scan cycle timing
+uint32_t g_inaTimer = 0L;
 
 /*--------------------------- Global Objects -----------------------------*/
 // Rack32 handler
@@ -157,64 +164,69 @@ void loop()
 
 void processInas()
 {
-  float mA[INA_COUNT];
-  float mV[INA_COUNT];
-  float mW[INA_COUNT];
-  bool alert[INA_COUNT];
-
-  float mATotal = 0;
-
-  // Iterate through each of the INA260s found on the I2C bus
-  for (uint8_t ina = 0; ina < INA_COUNT; ina++)
+  if ((millis() - g_inaTimer) > INA_CYCLE_TIME)
   {
-    if (bitRead(g_inasFound, ina) == 0)
-      continue;
-
-    // Read the values for this sensor
-    mA[ina] = ina260[ina].readCurrent();
-    mV[ina] = ina260[ina].readBusVoltage();
-    mW[ina] = ina260[ina].readPower();
-    alert[ina] = ina260[ina].alertFunctionFlag();
-
-    // Check bus voltage limits
-    int voltageCheck = checkVoltageLimits(mV[ina]);
-    if (voltageCheck < 0)
-    {
-      // Under-voltage alert
-      alert[ina] = true;
-    }
-    else if (voltageCheck > 0)
-    {
-      // Over-voltage alert
-      alert[ina] = true;
-    }
+    g_inaTimer = millis();
     
-    // Check for the alert state, i.e. current limit hit
-    if (alert[ina])
+    float mA[INA_COUNT];
+    float mV[INA_COUNT];
+    float mW[INA_COUNT];
+    bool alert[INA_COUNT];
+
+    float mATotal = 0;
+
+    // Iterate through each of the INA260s found on the I2C bus
+    for (uint8_t ina = 0; ina < INA_COUNT; ina++)
     {
-      // Turn off relay if it is currently on (might have already 
-      // been shutoff but still in alerted state)
-      if (RELAY_ON == mcp23017[MCP_OUTPUT_INDEX].digitalRead(ina))
+      if (bitRead(g_inasFound, ina) == 0)
+        continue;
+
+      // Read the values for this sensor
+      mA[ina] = ina260[ina].readCurrent();
+      mV[ina] = ina260[ina].readBusVoltage();
+      mW[ina] = ina260[ina].readPower();
+      alert[ina] = ina260[ina].alertFunctionFlag();
+
+      // Check bus voltage limits
+      int voltageCheck = checkVoltageLimits(mV[ina]);
+      if (voltageCheck < 0)
       {
-        outputEvent(MCP_OUTPUT_INDEX, ina, RELAY, RELAY_OFF);
+        // Under-voltage alert
+        alert[ina] = true;
+      }
+      else if (voltageCheck > 0)
+      {
+        // Over-voltage alert
+        alert[ina] = true;
+      }
+    
+      // Check for the alert state, i.e. current limit hit
+      if (alert[ina])
+      {
+        // Turn off relay if it is currently on (might have already 
+        // been shutoff but still in alerted state)
+        if (RELAY_ON == mcp23017[MCP_OUTPUT_INDEX].digitalRead(ina))
+        {
+          outputEvent(MCP_OUTPUT_INDEX, ina, RELAY, RELAY_OFF);
+        }
+
+        // Update the bar state to ALERT
+        setBarState(ina, STATE_ALERT);
       }
 
-      // Update the bar state to ALERT
-      setBarState(ina, STATE_ALERT);
+      // Update the display for this sensor
+      setBarValue(ina, mA[ina], mV[ina]);
+    
+      // Keep track of total current
+      mATotal += mA[ina];
     }
 
-    // Update the display for this sensor
-    setBarValue(ina, mA[ina], mV[ina]);
-    
-    // Keep track of total current
-    mATotal += mA[ina];
+    // Update the display total
+    setBarValue(INA_COUNT, mATotal, NAN);
+
+    // Publish telemetry data if required
+    publishTelemetry(mA, mV, mW, alert);
   }
-
-  // Update the display total
-  setBarValue(INA_COUNT, mATotal, NAN);
-
-  // Publish telemetry data if required
-  publishTelemetry(mA, mV, mW, alert);
 }
 
 void processMcps()

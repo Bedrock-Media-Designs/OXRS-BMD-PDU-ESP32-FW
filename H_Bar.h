@@ -17,15 +17,16 @@
 #define BAR_MAX_MA    2000.0
 
 // Value 'x' locations (current/volts)
-#define VALUE_X_A     150
-#define VALUE_X_V     190
-#define VALUE_W       25
+#define VALUE_X_A     125
+#define VALUE_X_V     165
+#define VALUE_X_OFFS  25
+#define VALUE_W       35
 #define VALUE_H       9
 
 // State 'x' location
 #define STATE_X       205
-#define STATE_X_TXT   208
-#define STATE_W       40
+#define STATE_X_OFFS  3
+#define STATE_W       240 - STATE_X
 #define STATE_H       9
 
 // Meter colour schemes
@@ -59,7 +60,7 @@ class H_Bar
     TFT_eSPI *_tft;
     int   _y;
 
-    int   _state   = STATE_NA;
+    int   _state   = STATE_OFF;
     float _peak_mA = -1;
     float _max_mA  = BAR_MAX_MA;
 
