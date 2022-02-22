@@ -146,46 +146,54 @@ void H_Bar::_drawTotal()
 
 void H_Bar::_drawValue(float value, int x, int dp, const char * units)
 {
-  _tft->fillRect(x-25, _y, VALUE_W, VALUE_H, TFT_BLACK);
-  _tft->setTextFont(1);
-  _tft->setTextDatum(TR_DATUM);
-  _tft->drawFloat(value, dp, x, _y+1);
-  _tft->setTextDatum(TL_DATUM);
-  _tft->drawString(units, x+2, _y+1); 
+  // create sprite to draw Value
+  TFT_eSprite _spr = TFT_eSprite(_tft);   
+  _spr.createSprite(VALUE_W, VALUE_H, 2);
+
+  _spr.fillSprite(TFT_BLACK);
+  _spr.setTextFont(1);
+  _spr.setTextDatum(TR_DATUM);
+  _spr.drawFloat(value, dp, VALUE_X_OFFS, 1);
+  _spr.setTextDatum(TL_DATUM);
+  _spr.drawString(units, VALUE_X_OFFS+2, 1); 
+  _spr.pushSprite(x, _y); 
 }
 
 void H_Bar::_drawState(int state)
 {
-  _tft->setTextFont(1);
-  _tft->setTextDatum(TL_DATUM);
+  // create sprite to draw state 
+  TFT_eSprite _spr = TFT_eSprite(_tft);   
+  _spr.createSprite(STATE_W, STATE_H, 2);
+
+  _spr.setTextFont(1);
+  _spr.setTextDatum(TL_DATUM);
 
   switch (state)
   {
     case STATE_NA:
-      _tft->setTextColor(TFT_WHITE);
-      _tft->fillRect(STATE_X, _y, STATE_W, STATE_H, TFT_DARKGREY);
-      _tft->drawString("N/A", STATE_X_TXT, _y+1); 
+      _spr.fillSprite(TFT_DARKGREY);
+      _spr.setTextColor(TFT_WHITE);
+      _spr.drawString("N/A", STATE_X_OFFS, 1); 
       _peak_mA = -1;
       break;
     case STATE_OFF:
-      _tft->setTextColor(TFT_WHITE);
-      _tft->fillRect(STATE_X, _y, STATE_W, STATE_H, TFT_DARKGREY);
-      _tft->drawString("OFF", STATE_X_TXT, _y+1); 
+      _spr.fillSprite(TFT_DARKGREY);
+      _spr.setTextColor(TFT_WHITE);
+      _spr.drawString("OFF", STATE_X_OFFS, 1); 
       _peak_mA = -1;
       break;
     case STATE_ON:
-      _tft->setTextColor(TFT_BLACK);
-      _tft->fillRect(STATE_X, _y, STATE_W, STATE_H, TFT_GREEN);
-      _tft->drawString("ON", STATE_X_TXT, _y+1); 
+      _spr.fillSprite(TFT_GREEN);
+      _spr.setTextColor(TFT_BLACK);
+      _spr.drawString("ON", STATE_X_OFFS, 1); 
       break;
     case STATE_ALERT:
-      _tft->setTextColor(TFT_WHITE);
-      _tft->fillRect(STATE_X, _y, STATE_W, STATE_H, TFT_RED);
-      _tft->drawString("ALERT", STATE_X_TXT, _y+1); 
+      _spr.fillSprite(TFT_RED);
+      _spr.setTextColor(TFT_WHITE);
+      _spr.drawString("ALERT", STATE_X_OFFS, 1); 
       break;
    }
-   
-  _tft->setTextColor(TFT_WHITE);
+  _spr.pushSprite(STATE_X, _y); 
 }
 
 /*
