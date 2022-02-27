@@ -27,7 +27,7 @@
 #define FW_NAME       "OXRS-BMD-PDU-ESP32-FW"
 #define FW_SHORT_NAME "Power Distribution Unit"
 #define FW_MAKER      "Bedrock Media Designs"
-#define FW_VERSION    "BETA-5"
+#define FW_VERSION    "BETA-6"
 
 /*--------------------------- Libraries ----------------------------------*/
 #include <Adafruit_MCP23X17.h>        // For MCP23017 I/O buffers
