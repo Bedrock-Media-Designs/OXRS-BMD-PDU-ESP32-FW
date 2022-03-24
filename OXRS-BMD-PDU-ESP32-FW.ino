@@ -309,12 +309,12 @@ void setConfigSchema()
   StaticJsonDocument<2048> json;
   JsonVariant config = json.as<JsonVariant>();
 
-  JsonObject publishTelemetrySeconds = config.createNestedObject("publishTelemetrySeconds");
-  publishTelemetrySeconds["title"] = "Publish Telemetry (seconds)";
-  publishTelemetrySeconds["description"] = "How often to publish sensor data from the onboard INA260 current sensors (defaults to 60 seconds, setting to 0 disables temperature reports). Must be a number between 0 and 86400 (i.e. 1 day).";
-  publishTelemetrySeconds["type"] = "integer";
-  publishTelemetrySeconds["minimum"] = 0;
-  publishTelemetrySeconds["maximum"] = 86400;
+  JsonObject publishPduTelemetrySeconds = config.createNestedObject("publishPduTelemetrySeconds");
+  publishPduTelemetrySeconds["title"] = "Publish PDU Telemetry (seconds)";
+  publishPduTelemetrySeconds["description"] = "How often to publish telemetry data from the onboard INA260 current sensors (defaults to 60 seconds, setting to 0 disables telemetry reports). Must be a number between 0 and 86400 (i.e. 1 day).";
+  publishPduTelemetrySeconds["type"] = "integer";
+  publishPduTelemetrySeconds["minimum"] = 0;
+  publishPduTelemetrySeconds["maximum"] = 86400;
 
   JsonObject overCurrentLimitMilliAmps = config.createNestedObject("overCurrentLimitMilliAmps");
   overCurrentLimitMilliAmps["title"] = "Over Current Limit (mA)";
@@ -332,6 +332,8 @@ void setConfigSchema()
 void outputConfigSchema(JsonVariant json)
 {
   JsonObject outputs = json.createNestedObject("outputs");
+  outputs["title"] = "Output Configuration";
+  outputs["description"] = "Add configuration for each output on your device. The 1-based index specifies which output you wish to configure. An output will shutdown if the reading from the current sensor exceeds the over current limit (defaults to 2000mA or 2A, must be a number between 1 and 5000).";
   outputs["type"] = "array";
   
   JsonObject items = outputs.createNestedObject("items");
@@ -340,15 +342,13 @@ void outputConfigSchema(JsonVariant json)
   JsonObject properties = items.createNestedObject("properties");
 
   JsonObject index = properties.createNestedObject("index");
-  index["title"] = "Output";
-  index["description"] = "The index this configuration applies to (1-based).";
+  index["title"] = "Index";
   index["type"] = "integer";
   index["minimum"] = 1;
   index["maximum"] = INA_COUNT;
 
   JsonObject overCurrentLimitMilliAmps = properties.createNestedObject("overCurrentLimitMilliAmps");
   overCurrentLimitMilliAmps["title"] = "Over Current Limit (mA)";
-  overCurrentLimitMilliAmps["description"] = "If the reading from the current sensor on this output exceeds this limit then shutdown this output (defaults to 2000mA or 2A). Must be a number between 1 and 5000 (i.e. 5A).";
   overCurrentLimitMilliAmps["type"] = "integer";
   overCurrentLimitMilliAmps["minimum"] = 1;
   overCurrentLimitMilliAmps["maximum"] = 5000;
@@ -359,9 +359,9 @@ void outputConfigSchema(JsonVariant json)
 
 void jsonConfig(JsonVariant json)
 {
-  if (json.containsKey("publishTelemetrySeconds"))
+  if (json.containsKey("publishPduTelemetrySeconds"))
   {
-    g_publishTelemetry_ms = json["publishTelemetrySeconds"].as<uint32_t>() * 1000L;
+    g_publishTelemetry_ms = json["publishPduTelemetrySeconds"].as<uint32_t>() * 1000L;
   }
 
   if (json.containsKey("overCurrentLimitMilliAmps"))
@@ -415,6 +415,8 @@ void setCommandSchema()
 void outputCommandSchema(JsonVariant json)
 {
   JsonObject outputs = json.createNestedObject("outputs");
+  outputs["title"] = "Output Commands";
+  outputs["description"] = "Send commands to one or more outputs on your device. The 1-based index specifies which output you wish to command. Supported commands are ‘on’ or ‘off’ to change the output state, or ‘query’ to publish the current state to MQTT.";
   outputs["type"] = "array";
   
   JsonObject items = outputs.createNestedObject("items");
@@ -423,11 +425,13 @@ void outputCommandSchema(JsonVariant json)
   JsonObject properties = items.createNestedObject("properties");
 
   JsonObject index = properties.createNestedObject("index");
+  index["title"] = "Index";
   index["type"] = "integer";
   index["minimum"] = 1;
   index["maximum"] = INA_COUNT;
 
   JsonObject command = properties.createNestedObject("command");
+  command["title"] = "Command";
   command["type"] = "string";
   JsonArray commandEnum = command.createNestedArray("enum");
   commandEnum.add("query");
