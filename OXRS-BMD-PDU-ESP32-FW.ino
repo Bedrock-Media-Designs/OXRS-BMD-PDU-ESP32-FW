@@ -35,6 +35,7 @@
 #include <OXRS_Rack32.h>              // Rack32 support
 #include <OXRS_Input.h>               // For input handling
 #include <OXRS_Output.h>              // For output handling
+#include <OXRS_Fan.h>                 // For fan control
 #include "logo.h"                     // Embedded maker logo
 #include "H_Bar.h"
 
@@ -104,6 +105,9 @@ Adafruit_MCP23X17 mcp23017[MCP_COUNT];
 OXRS_Output oxrsOutput;
 OXRS_Input oxrsInput;
 
+// Fan control
+OXRS_Fan oxrsFan;
+
 // Horizontal display bars (only display MAX_HBAR_COUNT + total bar)
 H_Bar hBar[INA_COUNT + 1];
 
@@ -133,6 +137,9 @@ void setup()
   // Scan the I2C bus and set up current sensors and I/O buffers
   scanI2CBus();
 
+  // Scan for and initialise any fan controllers found on the I2C bus
+  oxrsFan.begin();
+
   // Start Rack32 hardware
   rack32.begin(jsonConfig, jsonCommand);
 
@@ -160,6 +167,15 @@ void loop()
 
   // Process MCPs
   processMcps();
+
+  // Publish fan telemetry
+  DynamicJsonDocument telemetry(4096);
+  oxrsFan.getTelemetry(telemetry.as<JsonVariant>());
+  
+  if (telemetry.size() > 0)
+  {
+    rack32.publishTelemetry(telemetry.as<JsonVariant>());
+  }  
 }
 
 void processInas()
@@ -325,6 +341,9 @@ void setConfigSchema()
 
   outputConfigSchema(config);
 
+  // Add any fan control config
+  oxrsFan.setConfigSchema(config);
+
   // Pass our config schema down to the Rack32 library
   rack32.setConfigSchema(config);
 }
@@ -377,6 +396,9 @@ void jsonConfig(JsonVariant json)
       jsonOutputConfig(output);
     }
   }
+
+  // Pass on to the fan control library
+  oxrsFan.onConfig(json);
 }
 
 void jsonOutputConfig(JsonVariant json)
@@ -408,6 +430,9 @@ void setCommandSchema()
 
   outputCommandSchema(command);
   
+  // Add any fan control commands
+  oxrsFan.setCommandSchema(command);
+
   // Pass our command schema down to the Rack32 library
   rack32.setCommandSchema(command);
 }
@@ -452,6 +477,9 @@ void jsonCommand(JsonVariant json)
       jsonOutputCommand(output);
     }
   }
+
+  // Pass on to the fan control library
+  oxrsFan.onCommand(json);
 }
 
 void jsonOutputCommand(JsonVariant json)
