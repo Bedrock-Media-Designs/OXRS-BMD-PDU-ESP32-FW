@@ -7,9 +7,11 @@
     ESP32
 
   External dependencies. Install using the Arduino library manager:
-    "Adafruit_MCP23017"
-    "OXRS-SHA-Rack32-ESP32-LIB" by SuperHouse Automation Pty
-    "OXRS-SHA-IOHandler-ESP32-LIB" by SuperHouse Automation Pty
+    [Adafruit_MCP23X17](https://github.com/adafruit/Adafruit-MCP23017-Arduino-Library)
+    [Adafruit_INA260](https://github.com/adafruit/Adafruit_INA260)
+    [OXRS-SHA-Rack32-ESP32-LIB](https://github.com/SuperHouse/OXRS-SHA-Rack32-ESP32-LIB)
+    [OXRS-SHA-IOHandler-ESP32-LIB](https://github.com/SuperHouse/OXRS-SHA-IOHandler-ESP32-LIB)
+    [OXRS-AC-FanControl-ESP-LIB](https://github.com/austinscreations/OXRS-AC-FanControl-ESP-LIB)
 
   Compatible with the PDU8 hardware found here:
     https://bmdesigns.com.au/
@@ -27,7 +29,7 @@
 #define FW_NAME       "OXRS-BMD-PDU-ESP32-FW"
 #define FW_SHORT_NAME "Power Distribution Unit"
 #define FW_MAKER      "Bedrock Media Designs"
-#define FW_VERSION    "BETA-7"
+#define FW_VERSION    "BETA-8"
 
 /*--------------------------- Libraries ----------------------------------*/
 #include <Adafruit_MCP23X17.h>        // For MCP23017 I/O buffers
@@ -122,9 +124,11 @@ H_Bar hBar[INA_COUNT + 1];
 */
 void setup()
 {
-  // Startup logging to serial
+  // Start serial and let settle
   Serial.begin(SERIAL_BAUD_RATE);
-  Serial.println();
+  delay(1000);
+
+  // Dump firmware details to serial
   Serial.println(F("========================================"));
   Serial.print  (F("FIRMWARE: ")); Serial.println(FW_NAME);
   Serial.print  (F("MAKER:    ")); Serial.println(FW_MAKER);
@@ -511,7 +515,7 @@ void jsonOutputCommand(JsonVariant json)
       }
       else 
       {
-        Serial.println(F("[pdu ] invalid command"));
+        rack32.println(F("[pdu ] invalid command"));
       }
     }
   }
@@ -521,7 +525,7 @@ uint8_t getIndex(JsonVariant json)
 {
   if (!json.containsKey("index"))
   {
-    Serial.println(F("[pdu ] missing index"));
+    rack32.println(F("[pdu ] missing index"));
     return 0;
   }
   
@@ -530,14 +534,14 @@ uint8_t getIndex(JsonVariant json)
   // Check the index is valid for this device
   if (index <= 0 || index > INA_COUNT)
   {
-    Serial.println(F("[pdu ] invalid index"));
+    rack32.println(F("[pdu ] invalid index"));
     return 0;
   }
 
   // Check the index corresponds to an existing INA260 (index is 1-based)
   if (bitRead(g_inasFound, index - 1) == 0)
   {
-    Serial.println(F("[pdu ] invalid index, no INA260 found"));
+    rack32.println(F("[pdu ] invalid index, no INA260 found"));
     return 0;
   }
   
@@ -558,9 +562,9 @@ void publishOutputEvent(uint8_t index, uint8_t type, uint8_t state)
 
   if (!rack32.publishStatus(json.as<JsonVariant>()))
   {
-    Serial.print(F("[pdu ] [failover] "));
-    serializeJson(json, Serial);
-    Serial.println();
+    rack32.print(F("[pdu ] [failover] "));
+    serializeJson(json, rack32);
+    rack32.println();
 
     // TODO: add failover handling code here
   }
@@ -604,7 +608,7 @@ void inputEvent(uint8_t id, uint8_t input, uint8_t type, uint8_t state)
   // Check the input corresponds to an existing INA260
   if (bitRead(g_inasFound, input) == 0)
   {
-    Serial.println(F("[pdu ] invalid input, no INA260 found"));
+    rack32.println(F("[pdu ] invalid input, no INA260 found"));
     return;
   }
   
@@ -630,18 +634,18 @@ void outputEvent(uint8_t id, uint8_t output, uint8_t type, uint8_t state)
 void scanI2CBus()
 {
   // Initialise current sensors
-  Serial.println(F("[pdu ] scanning for current sensors..."));
+  rack32.println(F("[pdu ] scanning for current sensors..."));
 
   for (uint8_t ina = 0; ina < INA_COUNT; ina++)
   {
-    Serial.print(F(" - 0x"));
-    Serial.print(INA_I2C_ADDRESS[ina], HEX);
-    Serial.print(F("..."));
+    rack32.print(F(" - 0x"));
+    rack32.print(INA_I2C_ADDRESS[ina], HEX);
+    rack32.print(F("..."));
 
     if (ina260[ina].begin(INA_I2C_ADDRESS[ina]))
     {
       bitWrite(g_inasFound, ina, 1);
-      Serial.println(F("INA260"));
+      rack32.println(F("INA260"));
 
       // Set the number of samples to average
       ina260[ina].setAveragingCount(DEFAULT_AVERAGING_COUNT);
@@ -656,24 +660,24 @@ void scanI2CBus()
     }
     else
     {
-      Serial.println(F("empty"));
+      rack32.println(F("empty"));
     }
   }
 
   // Initialise I/O buffers
-  Serial.println(F("[pdu ] scanning for I/O buffers..."));
+  rack32.println(F("[pdu ] scanning for I/O buffers..."));
 
   for (uint8_t mcp = 0; mcp < MCP_COUNT; mcp++)
   {
-    Serial.print(F(" - 0x"));
-    Serial.print(MCP_I2C_ADDRESS[mcp], HEX);
-    Serial.print(F("..."));
+    rack32.print(F(" - 0x"));
+    rack32.print(MCP_I2C_ADDRESS[mcp], HEX);
+    rack32.print(F("..."));
   
     Wire.beginTransmission(MCP_I2C_ADDRESS[mcp]);
     if (Wire.endTransmission() == 0)
     {
       bitWrite(g_mcpsFound, mcp, 1);
-      Serial.println(F("MCP23017"));
+      rack32.println(F("MCP23017"));
   
       mcp23017[mcp].begin_I2C(MCP_I2C_ADDRESS[mcp]);
       for (uint8_t pin = 0; pin < MCP_PIN_COUNT; pin++)
@@ -694,7 +698,7 @@ void scanI2CBus()
     }
     else
     {
-      Serial.println(F("empty"));
+      rack32.println(F("empty"));
     }
   }
 }
