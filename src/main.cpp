@@ -1,37 +1,19 @@
 /**
   ESP32 power distribution unit firmware for the Open eXtensible Rack System
-  
-  See https://oxrs.io/docs/firmware/pdu-esp32.html for documentation.
 
-  Compile options:
-    ESP32
+  Documentation:  
+    https://oxrs.io/docs/firmware/pdu-esp32.html
 
-  External dependencies. Install using the Arduino library manager:
-    [Adafruit_MCP23X17](https://github.com/adafruit/Adafruit-MCP23017-Arduino-Library)
-    [Adafruit_INA260](https://github.com/adafruit/Adafruit_INA260)
-    [OXRS-SHA-Rack32-ESP32-LIB](https://github.com/SuperHouse/OXRS-SHA-Rack32-ESP32-LIB)
-    [OXRS-SHA-IOHandler-ESP32-LIB](https://github.com/SuperHouse/OXRS-SHA-IOHandler-ESP32-LIB)
-    [OXRS-AC-FanControl-ESP-LIB](https://github.com/austinscreations/OXRS-AC-FanControl-ESP-LIB)
-
-  Compatible with the PDU8 hardware found here:
+  Supported hardware:
     https://bmdesigns.com.au/
 
   GitHub repository:
     https://github.com/Bedrock-Media-Designs/OXRS-BMD-PDU-ESP32-FW
-    
-  Bugs/Features:
-    See GitHub issues list
 
   Copyright 2019-2022 Bedrock Media Designs Ltd
 */
 
-/*--------------------------- Firmware -----------------------------------*/
-#define FW_NAME       "OXRS-BMD-PDU-ESP32-FW"
-#define FW_SHORT_NAME "Power Distribution Unit"
-#define FW_MAKER      "Bedrock Media Designs"
-#define FW_VERSION    "BETA-8"
-
-/*--------------------------- Libraries ----------------------------------*/
+/*--------------------------- Libraries -------------------------------*/
 #include <Adafruit_MCP23X17.h>        // For MCP23017 I/O buffers
 #include <Adafruit_INA260.h>          // For INA260 current sensors
 #include <OXRS_Rack32.h>              // Rack32 support
@@ -41,7 +23,7 @@
 #include "logo.h"                     // Embedded maker logo
 #include "H_Bar.h"
 
-/*--------------------------- Constants ----------------------------------*/
+/*--------------------------- Constants -------------------------------*/
 // Serial
 #define       SERIAL_BAUD_RATE      115200
 
@@ -73,7 +55,7 @@ const uint8_t MCP_COUNT             = sizeof(MCP_I2C_ADDRESS);
 // set to 40ms (25Hz scan frequency)
 #define       INA_CYCLE_TIME        40L
 
-/*--------------------------- Global Variables ---------------------------*/
+/*--------------------------- Global Variables ------------------------*/
 // Each bit corresponds to a device found on the IC2 bus
 uint8_t g_inasFound = 0;
 uint8_t g_mcpsFound = 0;
@@ -93,9 +75,9 @@ uint32_t g_overCurrentLimit_mA    = 10000L;
 // Timer for INA scan cycle timing
 uint32_t g_inaTimer = 0L;
 
-/*--------------------------- Global Objects -----------------------------*/
+/*--------------------------- Instantiate Globals ---------------------*/
 // Rack32 handler
-OXRS_Rack32 rack32(FW_NAME, FW_SHORT_NAME, FW_MAKER, FW_VERSION, FW_LOGO);
+OXRS_Rack32 rack32(FW_LOGO);
 
 // Current sensors
 Adafruit_INA260 ina260[INA_COUNT];
@@ -118,68 +100,374 @@ H_Bar hBar[INA_COUNT + 1];
 //       till a grace period has elapsed
 
 
-/*--------------------------- Program ------------------------------------*/
-/**
-  Setup
-*/
-void setup()
+/*--------------------------- Program ---------------------------------*/
+void setBarValue(int ina, float mA, float mV)
 {
-  // Start serial and let settle
-  Serial.begin(SERIAL_BAUD_RATE);
-  delay(1000);
+  hBar[ina].setValue(mA, mV);
+}
 
-  // Dump firmware details to serial
-  Serial.println(F("========================================"));
-  Serial.print  (F("FIRMWARE: ")); Serial.println(FW_NAME);
-  Serial.print  (F("MAKER:    ")); Serial.println(FW_MAKER);
-  Serial.print  (F("VERSION:  ")); Serial.println(FW_VERSION);
-  Serial.println(F("========================================"));
+void setBarState(int ina, int state)
+{
+  hBar[ina].setState(state);
+}
 
-  // Start the I2C bus
-  Wire.begin();
+void setBarMaxValue(int ina, float mA)
+{
+  hBar[ina].setMaxValue(mA);
+}
 
-  // Scan the I2C bus and set up current sensors and I/O buffers
-  scanI2CBus();
+void getOutputType(char outputType[], uint8_t type)
+{
+  // Determine what type of event
+  sprintf_P(outputType, PSTR("error"));
+  switch (type)
+  {
+    case RELAY:
+      sprintf_P(outputType, PSTR("relay"));
+      break;
+  }
+}
 
-  // Scan for and initialise any fan controllers found on the I2C bus
-  oxrsFan.begin();
+void getOutputEventType(char eventType[], uint8_t state)
+{
+  // Determine what event we need to publish
+  sprintf_P(eventType, PSTR("error"));
+  switch (state)
+  {
+    case RELAY_ON:
+      sprintf_P(eventType, PSTR("on"));
+      break;
+    case RELAY_OFF:
+      sprintf_P(eventType, PSTR("off"));
+      break;
+  }
+}
 
-  // Start Rack32 hardware
-  rack32.begin(jsonConfig, jsonCommand);
+int checkVoltageLimits(float mV)
+{
+  uint32_t underLimit_mV = g_supplyVoltage_mV - g_supplyVoltageDelta_mV;
+  uint32_t overLimit_mV = g_supplyVoltage_mV + g_supplyVoltageDelta_mV;
 
-  // Setup custom LCD
-  initialiseScreen();
+  if (mV < underLimit_mV) { return -1; }
+  if (mV > overLimit_mV)  { return 1; }
+
+  return 0;
+}
+
+void publishTelemetry(float mA[], float mV[], float mW[], bool alert[])
+{
+  // Ignore if publishing has been disabled
+  if (g_publishTelemetry_ms == 0) { return; }
+
+  // Check if we are ready to publish
+  if ((millis() - g_lastPublishTelemetry) > g_publishTelemetry_ms)
+  {
+    DynamicJsonDocument telemetry(1024);
+    JsonArray array = telemetry.to<JsonArray>();
+   
+    for (uint8_t ina = 0; ina < INA_COUNT; ina++)
+    {
+      if (bitRead(g_inasFound, ina) == 0)
+        continue;
+
+      JsonObject json = array.createNestedObject();
+      json["index"] = ina + 1;
+      json["mA"] = mA[ina];
+      json["mV"] = mV[ina];
+      json["mW"] = mW[ina];
+      json["alert"] = alert[ina];
+    }
+
+    // Publish to MQTT
+    if (telemetry.size() > 0)
+    {
+      rack32.publishTelemetry(telemetry.as<JsonVariant>());
+    }
+    
+    // Reset our timer
+    g_lastPublishTelemetry = millis();
+  }
+}
+
+uint8_t getIndex(JsonVariant json)
+{
+  if (!json.containsKey("index"))
+  {
+    rack32.println(F("[pdu ] missing index"));
+    return 0;
+  }
   
-  // Set up config/command schema (for self-discovery and adoption)
-  setConfigSchema();
-  setCommandSchema();
+  uint8_t index = json["index"].as<uint8_t>();
   
-  // Speed up I2C clock for faster scan rate (after bus scan)
-  Wire.setClock(I2C_CLOCK_SPEED);
+  // Check the index is valid for this device
+  if (index <= 0 || index > INA_COUNT)
+  {
+    rack32.println(F("[pdu ] invalid index"));
+    return 0;
+  }
+
+  // Check the index corresponds to an existing INA260 (index is 1-based)
+  if (bitRead(g_inasFound, index - 1) == 0)
+  {
+    rack32.println(F("[pdu ] invalid index, no INA260 found"));
+    return 0;
+  }
+  
+  return index;
+}
+
+void publishOutputEvent(uint8_t index, uint8_t type, uint8_t state)
+{
+  char outputType[8];
+  getOutputType(outputType, type);
+  char outputEvent[7];
+  getOutputEventType(outputEvent, state);
+
+  StaticJsonDocument<128> json;
+  json["index"] = index;
+  json["type"] = outputType;
+  json["event"] = outputEvent;
+
+  if (!rack32.publishStatus(json.as<JsonVariant>()))
+  {
+    rack32.print(F("[pdu ] [failover] "));
+    serializeJson(json, rack32);
+    rack32.println();
+
+    // TODO: add failover handling code here
+  }
 }
 
 /**
-  Main processing loop
-*/
-void loop()
+  Config handler
+ */
+void outputConfigSchema(JsonVariant json)
 {
-  // Let Rack32 hardware handle any events etc
-  rack32.loop();
-
-  // Process INA260 sensors
-  processInas();
-
-  // Process MCPs
-  processMcps();
-
-  // Publish fan telemetry
-  DynamicJsonDocument telemetry(4096);
-  oxrsFan.getTelemetry(telemetry.as<JsonVariant>());
+  JsonObject outputs = json.createNestedObject("outputs");
+  outputs["title"] = "Output Configuration";
+  outputs["description"] = "Add configuration for each output on your device. The 1-based index specifies which output you wish to configure. An output will shutdown if the reading from the current sensor exceeds the over current limit (defaults to 2000mA or 2A, must be a number between 1 and 5000).";
+  outputs["type"] = "array";
   
-  if (telemetry.size() > 0)
+  JsonObject items = outputs.createNestedObject("items");
+  items["type"] = "object";
+
+  JsonObject properties = items.createNestedObject("properties");
+
+  JsonObject index = properties.createNestedObject("index");
+  index["title"] = "Index";
+  index["type"] = "integer";
+  index["minimum"] = 1;
+  index["maximum"] = INA_COUNT;
+
+  JsonObject overCurrentLimitMilliAmps = properties.createNestedObject("overCurrentLimitMilliAmps");
+  overCurrentLimitMilliAmps["title"] = "Over Current Limit (mA)";
+  overCurrentLimitMilliAmps["type"] = "integer";
+  overCurrentLimitMilliAmps["minimum"] = 1;
+  overCurrentLimitMilliAmps["maximum"] = 5000;
+
+  JsonArray required = items.createNestedArray("required");
+  required.add("index");
+}
+
+void setConfigSchema()
+{
+  // Define our config schema
+  StaticJsonDocument<2048> json;
+  JsonVariant config = json.as<JsonVariant>();
+
+  JsonObject publishPduTelemetrySeconds = config.createNestedObject("publishPduTelemetrySeconds");
+  publishPduTelemetrySeconds["title"] = "Publish PDU Telemetry (seconds)";
+  publishPduTelemetrySeconds["description"] = "How often to publish telemetry data from the onboard INA260 current sensors (defaults to 60 seconds, setting to 0 disables telemetry reports). Must be a number between 0 and 86400 (i.e. 1 day).";
+  publishPduTelemetrySeconds["type"] = "integer";
+  publishPduTelemetrySeconds["minimum"] = 0;
+  publishPduTelemetrySeconds["maximum"] = 86400;
+
+  JsonObject overCurrentLimitMilliAmps = config.createNestedObject("overCurrentLimitMilliAmps");
+  overCurrentLimitMilliAmps["title"] = "Over Current Limit (mA)";
+  overCurrentLimitMilliAmps["description"] = "If the readings from all current sensors add up to more than this limit then shutdown all outputs (defaults to 10000mA or 10A). Must be a number between 1 and 15000 (i.e. 15A).";
+  overCurrentLimitMilliAmps["type"] = "integer";
+  overCurrentLimitMilliAmps["minimum"] = 1;
+  overCurrentLimitMilliAmps["maximum"] = 15000;
+
+  outputConfigSchema(config);
+
+  // Add any fan control config
+  oxrsFan.setConfigSchema(config);
+
+  // Pass our config schema down to the Rack32 library
+  rack32.setConfigSchema(config);
+}
+
+void jsonOutputConfig(JsonVariant json)
+{
+  uint8_t index = getIndex(json);
+  if (index == 0) return;
+
+  // Index is 1-based
+  uint8_t ina = index - 1;
+  
+  if (json.containsKey("overCurrentLimitMilliAmps"))
   {
-    rack32.publishTelemetry(telemetry.as<JsonVariant>());
-  }  
+    uint32_t overCurrentLimit_mA = json["overCurrentLimitMilliAmps"].as<uint32_t>();
+
+    // Set the alert limit on the INA260 and re-scale the bar graph on the display
+    ina260[ina].setAlertLimit(overCurrentLimit_mA);
+    setBarMaxValue(ina, overCurrentLimit_mA);
+  }
+}
+
+void jsonConfig(JsonVariant json)
+{
+  if (json.containsKey("publishPduTelemetrySeconds"))
+  {
+    g_publishTelemetry_ms = json["publishPduTelemetrySeconds"].as<uint32_t>() * 1000L;
+  }
+
+  if (json.containsKey("overCurrentLimitMilliAmps"))
+  {
+    g_overCurrentLimit_mA = json["overCurrentLimitMilliAmps"].as<uint32_t>();
+    setBarMaxValue(INA_COUNT, g_overCurrentLimit_mA);
+  }
+
+  if (json.containsKey("outputs"))
+  {
+    for (JsonVariant output : json["outputs"].as<JsonArray>())
+    {
+      jsonOutputConfig(output);
+    }
+  }
+
+  // Pass on to the fan control library
+  oxrsFan.onConfig(json);
+}
+
+/**
+  Command handler
+ */
+void outputCommandSchema(JsonVariant json)
+{
+  JsonObject outputs = json.createNestedObject("outputs");
+  outputs["title"] = "Output Commands";
+  outputs["description"] = "Send commands to one or more outputs on your device. The 1-based index specifies which output you wish to command. Supported commands are ‘on’ or ‘off’ to change the output state, or ‘query’ to publish the current state to MQTT.";
+  outputs["type"] = "array";
+  
+  JsonObject items = outputs.createNestedObject("items");
+  items["type"] = "object";
+
+  JsonObject properties = items.createNestedObject("properties");
+
+  JsonObject index = properties.createNestedObject("index");
+  index["title"] = "Index";
+  index["type"] = "integer";
+  index["minimum"] = 1;
+  index["maximum"] = INA_COUNT;
+
+  JsonObject command = properties.createNestedObject("command");
+  command["title"] = "Command";
+  command["type"] = "string";
+  JsonArray commandEnum = command.createNestedArray("enum");
+  commandEnum.add("query");
+  commandEnum.add("on");
+  commandEnum.add("off");
+
+  JsonArray required = items.createNestedArray("required");
+  required.add("index");
+  required.add("command");
+}
+
+void setCommandSchema()
+{
+  // Define our config schema
+  StaticJsonDocument<2048> json;
+  JsonVariant command = json.as<JsonVariant>();
+
+  outputCommandSchema(command);
+  
+  // Add any fan control commands
+  oxrsFan.setCommandSchema(command);
+
+  // Pass our command schema down to the Rack32 library
+  rack32.setCommandSchema(command);
+}
+
+void jsonOutputCommand(JsonVariant json)
+{
+  uint8_t index = getIndex(json);
+  if (index == 0) return;
+
+  // Index is 1-based
+  uint8_t pin = index - 1;
+  
+  if (json.containsKey("command"))
+  {
+    if (json["command"].isNull() || strcmp(json["command"], "query") == 0)
+    {
+      // Publish a status event with the current state
+      uint8_t state = mcp23017[MCP_OUTPUT_INDEX].digitalRead(pin);
+      publishOutputEvent(index, RELAY, state);
+    }
+    else
+    {
+      // Send this command down to our output handler to process
+      if (strcmp(json["command"], "on") == 0)
+      {
+        oxrsOutput.handleCommand(MCP_OUTPUT_INDEX, pin, RELAY_ON);
+      }
+      else if (strcmp(json["command"], "off") == 0)
+      {
+        oxrsOutput.handleCommand(MCP_OUTPUT_INDEX, pin, RELAY_OFF);
+      }
+      else 
+      {
+        rack32.println(F("[pdu ] invalid command"));
+      }
+    }
+  }
+}
+
+void jsonCommand(JsonVariant json)
+{
+  if (json.containsKey("outputs"))
+  {
+    for (JsonVariant output : json["outputs"].as<JsonArray>())
+    {
+      jsonOutputCommand(output);
+    }
+  }
+
+  // Pass on to the fan control library
+  oxrsFan.onCommand(json);
+}
+
+/**
+  Event handlers
+*/
+void outputEvent(uint8_t id, uint8_t output, uint8_t type, uint8_t state)
+{
+  // Update the MCP pin - i.e. turn the relay on/off
+  mcp23017[id].digitalWrite(output, state);
+
+  // Update the display
+  setBarState(output, state == RELAY_ON ? STATE_ON : STATE_OFF);
+
+  // Publish the event (index is 1-based)
+  publishOutputEvent(output + 1, type, state);
+}
+
+void inputEvent(uint8_t id, uint8_t input, uint8_t type, uint8_t state)
+{
+  uint8_t outputType = RELAY;
+  uint8_t outputState = state == LOW_EVENT ? RELAY_ON : RELAY_OFF;
+
+  // Check the input corresponds to an existing INA260
+  if (bitRead(g_inasFound, input) == 0)
+  {
+    rack32.println(F("[pdu ] invalid input, no INA260 found"));
+    return;
+  }
+  
+  // Pass this event straight thru to the output handler, using same index
+  outputEvent(MCP_OUTPUT_INDEX, input, outputType, outputState);
 }
 
 void processInas()
@@ -272,360 +560,6 @@ void processMcps()
       oxrsInput.process(mcp, io_value);    
     }
   }
-}
-
-int checkVoltageLimits(float mV)
-{
-  uint32_t underLimit_mV = g_supplyVoltage_mV - g_supplyVoltageDelta_mV;
-  uint32_t overLimit_mV = g_supplyVoltage_mV + g_supplyVoltageDelta_mV;
-
-  if (mV < underLimit_mV) { return -1; }
-  if (mV > overLimit_mV)  { return 1; }
-
-  return 0;
-}
-
-void publishTelemetry(float mA[], float mV[], float mW[], bool alert[])
-{
-  // Ignore if publishing has been disabled
-  if (g_publishTelemetry_ms == 0) { return; }
-
-  // Check if we are ready to publish
-  if ((millis() - g_lastPublishTelemetry) > g_publishTelemetry_ms)
-  {
-    DynamicJsonDocument telemetry(1024);
-    JsonArray array = telemetry.to<JsonArray>();
-   
-    for (uint8_t ina = 0; ina < INA_COUNT; ina++)
-    {
-      if (bitRead(g_inasFound, ina) == 0)
-        continue;
-
-      JsonObject json = array.createNestedObject();
-      json["index"] = ina + 1;
-      json["mA"] = mA[ina];
-      json["mV"] = mV[ina];
-      json["mW"] = mW[ina];
-      json["alert"] = alert[ina];
-    }
-
-    // Publish to MQTT
-    if (telemetry.size() > 0)
-    {
-      rack32.publishTelemetry(telemetry.as<JsonVariant>());
-    }
-    
-    // Reset our timer
-    g_lastPublishTelemetry = millis();
-  }
-}
-
-/**
-  Config handler
- */
-void setConfigSchema()
-{
-  // Define our config schema
-  StaticJsonDocument<2048> json;
-  JsonVariant config = json.as<JsonVariant>();
-
-  JsonObject publishPduTelemetrySeconds = config.createNestedObject("publishPduTelemetrySeconds");
-  publishPduTelemetrySeconds["title"] = "Publish PDU Telemetry (seconds)";
-  publishPduTelemetrySeconds["description"] = "How often to publish telemetry data from the onboard INA260 current sensors (defaults to 60 seconds, setting to 0 disables telemetry reports). Must be a number between 0 and 86400 (i.e. 1 day).";
-  publishPduTelemetrySeconds["type"] = "integer";
-  publishPduTelemetrySeconds["minimum"] = 0;
-  publishPduTelemetrySeconds["maximum"] = 86400;
-
-  JsonObject overCurrentLimitMilliAmps = config.createNestedObject("overCurrentLimitMilliAmps");
-  overCurrentLimitMilliAmps["title"] = "Over Current Limit (mA)";
-  overCurrentLimitMilliAmps["description"] = "If the readings from all current sensors add up to more than this limit then shutdown all outputs (defaults to 10000mA or 10A). Must be a number between 1 and 15000 (i.e. 15A).";
-  overCurrentLimitMilliAmps["type"] = "integer";
-  overCurrentLimitMilliAmps["minimum"] = 1;
-  overCurrentLimitMilliAmps["maximum"] = 15000;
-
-  outputConfigSchema(config);
-
-  // Add any fan control config
-  oxrsFan.setConfigSchema(config);
-
-  // Pass our config schema down to the Rack32 library
-  rack32.setConfigSchema(config);
-}
-
-void outputConfigSchema(JsonVariant json)
-{
-  JsonObject outputs = json.createNestedObject("outputs");
-  outputs["title"] = "Output Configuration";
-  outputs["description"] = "Add configuration for each output on your device. The 1-based index specifies which output you wish to configure. An output will shutdown if the reading from the current sensor exceeds the over current limit (defaults to 2000mA or 2A, must be a number between 1 and 5000).";
-  outputs["type"] = "array";
-  
-  JsonObject items = outputs.createNestedObject("items");
-  items["type"] = "object";
-
-  JsonObject properties = items.createNestedObject("properties");
-
-  JsonObject index = properties.createNestedObject("index");
-  index["title"] = "Index";
-  index["type"] = "integer";
-  index["minimum"] = 1;
-  index["maximum"] = INA_COUNT;
-
-  JsonObject overCurrentLimitMilliAmps = properties.createNestedObject("overCurrentLimitMilliAmps");
-  overCurrentLimitMilliAmps["title"] = "Over Current Limit (mA)";
-  overCurrentLimitMilliAmps["type"] = "integer";
-  overCurrentLimitMilliAmps["minimum"] = 1;
-  overCurrentLimitMilliAmps["maximum"] = 5000;
-
-  JsonArray required = items.createNestedArray("required");
-  required.add("index");
-}
-
-void jsonConfig(JsonVariant json)
-{
-  if (json.containsKey("publishPduTelemetrySeconds"))
-  {
-    g_publishTelemetry_ms = json["publishPduTelemetrySeconds"].as<uint32_t>() * 1000L;
-  }
-
-  if (json.containsKey("overCurrentLimitMilliAmps"))
-  {
-    g_overCurrentLimit_mA = json["overCurrentLimitMilliAmps"].as<uint32_t>();
-    setBarMaxValue(INA_COUNT, g_overCurrentLimit_mA);
-  }
-
-  if (json.containsKey("outputs"))
-  {
-    for (JsonVariant output : json["outputs"].as<JsonArray>())
-    {
-      jsonOutputConfig(output);
-    }
-  }
-
-  // Pass on to the fan control library
-  oxrsFan.onConfig(json);
-}
-
-void jsonOutputConfig(JsonVariant json)
-{
-  uint8_t index = getIndex(json);
-  if (index == 0) return;
-
-  // Index is 1-based
-  uint8_t ina = index - 1;
-  
-  if (json.containsKey("overCurrentLimitMilliAmps"))
-  {
-    uint32_t overCurrentLimit_mA = json["overCurrentLimitMilliAmps"].as<uint32_t>();
-
-    // Set the alert limit on the INA260 and re-scale the bar graph on the display
-    ina260[ina].setAlertLimit(overCurrentLimit_mA);
-    setBarMaxValue(ina, overCurrentLimit_mA);
-  }
-}
-
-/**
-  Command handler
- */
-void setCommandSchema()
-{
-  // Define our config schema
-  StaticJsonDocument<2048> json;
-  JsonVariant command = json.as<JsonVariant>();
-
-  outputCommandSchema(command);
-  
-  // Add any fan control commands
-  oxrsFan.setCommandSchema(command);
-
-  // Pass our command schema down to the Rack32 library
-  rack32.setCommandSchema(command);
-}
-
-void outputCommandSchema(JsonVariant json)
-{
-  JsonObject outputs = json.createNestedObject("outputs");
-  outputs["title"] = "Output Commands";
-  outputs["description"] = "Send commands to one or more outputs on your device. The 1-based index specifies which output you wish to command. Supported commands are ‘on’ or ‘off’ to change the output state, or ‘query’ to publish the current state to MQTT.";
-  outputs["type"] = "array";
-  
-  JsonObject items = outputs.createNestedObject("items");
-  items["type"] = "object";
-
-  JsonObject properties = items.createNestedObject("properties");
-
-  JsonObject index = properties.createNestedObject("index");
-  index["title"] = "Index";
-  index["type"] = "integer";
-  index["minimum"] = 1;
-  index["maximum"] = INA_COUNT;
-
-  JsonObject command = properties.createNestedObject("command");
-  command["title"] = "Command";
-  command["type"] = "string";
-  JsonArray commandEnum = command.createNestedArray("enum");
-  commandEnum.add("query");
-  commandEnum.add("on");
-  commandEnum.add("off");
-
-  JsonArray required = items.createNestedArray("required");
-  required.add("index");
-  required.add("command");
-}
-
-void jsonCommand(JsonVariant json)
-{
-  if (json.containsKey("outputs"))
-  {
-    for (JsonVariant output : json["outputs"].as<JsonArray>())
-    {
-      jsonOutputCommand(output);
-    }
-  }
-
-  // Pass on to the fan control library
-  oxrsFan.onCommand(json);
-}
-
-void jsonOutputCommand(JsonVariant json)
-{
-  uint8_t index = getIndex(json);
-  if (index == 0) return;
-
-  // Index is 1-based
-  uint8_t pin = index - 1;
-  
-  if (json.containsKey("command"))
-  {
-    if (json["command"].isNull() || strcmp(json["command"], "query") == 0)
-    {
-      // Publish a status event with the current state
-      uint8_t state = mcp23017[MCP_OUTPUT_INDEX].digitalRead(pin);
-      publishOutputEvent(index, RELAY, state);
-    }
-    else
-    {
-      // Send this command down to our output handler to process
-      if (strcmp(json["command"], "on") == 0)
-      {
-        oxrsOutput.handleCommand(MCP_OUTPUT_INDEX, pin, RELAY_ON);
-      }
-      else if (strcmp(json["command"], "off") == 0)
-      {
-        oxrsOutput.handleCommand(MCP_OUTPUT_INDEX, pin, RELAY_OFF);
-      }
-      else 
-      {
-        rack32.println(F("[pdu ] invalid command"));
-      }
-    }
-  }
-}
-
-uint8_t getIndex(JsonVariant json)
-{
-  if (!json.containsKey("index"))
-  {
-    rack32.println(F("[pdu ] missing index"));
-    return 0;
-  }
-  
-  uint8_t index = json["index"].as<uint8_t>();
-  
-  // Check the index is valid for this device
-  if (index <= 0 || index > INA_COUNT)
-  {
-    rack32.println(F("[pdu ] invalid index"));
-    return 0;
-  }
-
-  // Check the index corresponds to an existing INA260 (index is 1-based)
-  if (bitRead(g_inasFound, index - 1) == 0)
-  {
-    rack32.println(F("[pdu ] invalid index, no INA260 found"));
-    return 0;
-  }
-  
-  return index;
-}
-
-void publishOutputEvent(uint8_t index, uint8_t type, uint8_t state)
-{
-  char outputType[8];
-  getOutputType(outputType, type);
-  char outputEvent[7];
-  getOutputEventType(outputEvent, state);
-
-  StaticJsonDocument<128> json;
-  json["index"] = index;
-  json["type"] = outputType;
-  json["event"] = outputEvent;
-
-  if (!rack32.publishStatus(json.as<JsonVariant>()))
-  {
-    rack32.print(F("[pdu ] [failover] "));
-    serializeJson(json, rack32);
-    rack32.println();
-
-    // TODO: add failover handling code here
-  }
-}
-
-void getOutputType(char outputType[], uint8_t type)
-{
-  // Determine what type of event
-  sprintf_P(outputType, PSTR("error"));
-  switch (type)
-  {
-    case RELAY:
-      sprintf_P(outputType, PSTR("relay"));
-      break;
-  }
-}
-
-void getOutputEventType(char eventType[], uint8_t state)
-{
-  // Determine what event we need to publish
-  sprintf_P(eventType, PSTR("error"));
-  switch (state)
-  {
-    case RELAY_ON:
-      sprintf_P(eventType, PSTR("on"));
-      break;
-    case RELAY_OFF:
-      sprintf_P(eventType, PSTR("off"));
-      break;
-  }
-}
-
-/**
-  Event handlers
-*/
-void inputEvent(uint8_t id, uint8_t input, uint8_t type, uint8_t state)
-{
-  uint8_t outputType = RELAY;
-  uint8_t outputState = state == LOW_EVENT ? RELAY_ON : RELAY_OFF;
-
-  // Check the input corresponds to an existing INA260
-  if (bitRead(g_inasFound, input) == 0)
-  {
-    rack32.println(F("[pdu ] invalid input, no INA260 found"));
-    return;
-  }
-  
-  // Pass this event straight thru to the output handler, using same index
-  outputEvent(MCP_OUTPUT_INDEX, input, outputType, outputState);
-}
-
-void outputEvent(uint8_t id, uint8_t output, uint8_t type, uint8_t state)
-{
-  // Update the MCP pin - i.e. turn the relay on/off
-  mcp23017[id].digitalWrite(output, state);
-
-  // Update the display
-  setBarState(output, state == RELAY_ON ? STATE_ON : STATE_OFF);
-
-  // Publish the event (index is 1-based)
-  publishOutputEvent(output + 1, type, state);
 }
 
 /**
@@ -736,17 +670,59 @@ void initialiseScreen()
   hBar[INA_COUNT].begin(screen->getTft(), y, 0);
 }
 
-void setBarValue(int ina, float mA, float mV)
+/**
+  Setup
+*/
+void setup()
 {
-  hBar[ina].setValue(mA, mV);
+  // Start serial and let settle
+  Serial.begin(SERIAL_BAUD_RATE);
+  delay(1000);
+  Serial.println(F("[pdu ] starting up..."));
+
+  // Start the I2C bus
+  Wire.begin();
+
+  // Scan the I2C bus and set up current sensors and I/O buffers
+  scanI2CBus();
+
+  // Scan for and initialise any fan controllers found on the I2C bus
+  oxrsFan.begin();
+
+  // Start Rack32 hardware
+  rack32.begin(jsonConfig, jsonCommand);
+
+  // Setup custom LCD
+  initialiseScreen();
+  
+  // Set up config/command schema (for self-discovery and adoption)
+  setConfigSchema();
+  setCommandSchema();
+  
+  // Speed up I2C clock for faster scan rate (after bus scan)
+  Wire.setClock(I2C_CLOCK_SPEED);
 }
 
-void setBarState(int ina, int state)
+/**
+  Main processing loop
+*/
+void loop()
 {
-  hBar[ina].setState(state);
-}
+  // Let Rack32 hardware handle any events etc
+  rack32.loop();
 
-void setBarMaxValue(int ina, float mA)
-{
-  hBar[ina].setMaxValue(mA);
+  // Process INA260 sensors
+  processInas();
+
+  // Process MCPs
+  processMcps();
+
+  // Publish fan telemetry
+  DynamicJsonDocument telemetry(4096);
+  oxrsFan.getTelemetry(telemetry.as<JsonVariant>());
+  
+  if (telemetry.size() > 0)
+  {
+    rack32.publishTelemetry(telemetry.as<JsonVariant>());
+  }  
 }
