@@ -717,6 +717,9 @@ void loop()
   // Process MCPs
   processMcps();
 
+  // Let fan controllers handle any events etc
+  oxrsFan.loop();
+
   // Publish fan telemetry
   DynamicJsonDocument telemetry(4096);
   oxrsFan.getTelemetry(telemetry.as<JsonVariant>());
