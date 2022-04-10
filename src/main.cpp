@@ -403,7 +403,8 @@ void jsonOutputCommand(JsonVariant json)
     if (json["command"].isNull() || strcmp(json["command"], "query") == 0)
     {
       // Publish a status event with the current state
-      uint8_t state = mcp23017[MCP_OUTPUT_INDEX].digitalRead(pin);
+      // NOTE: the PDU relays are NC - so LOW is on, HIGH is off
+      uint8_t state = mcp23017[MCP_OUTPUT_INDEX].digitalRead(pin) == LOW ? RELAY_ON : RELAY_OFF;
       publishOutputEvent(index, RELAY, state);
     }
     else
@@ -445,7 +446,8 @@ void jsonCommand(JsonVariant json)
 void outputEvent(uint8_t id, uint8_t output, uint8_t type, uint8_t state)
 {
   // Update the MCP pin - i.e. turn the relay on/off
-  mcp23017[id].digitalWrite(output, state);
+  // NOTE: the PDU relays are NC - so LOW to turn on, HIGH to turn off
+  mcp23017[id].digitalWrite(output, state == RELAY_ON ? LOW : HIGH);
 
   // Update the display
   setBarState(output, state == RELAY_ON ? STATE_ON : STATE_OFF);
@@ -511,9 +513,9 @@ void processInas()
       // Check for the alert state, i.e. current limit hit
       if (alert[ina])
       {
-        // Turn off relay if it is currently on (might have already 
-        // been shutoff but still in alerted state)
-        if (RELAY_ON == mcp23017[MCP_OUTPUT_INDEX].digitalRead(ina))
+        // Turn off relay if it is currently on
+        // NOTE: the PDU relays are NC - so LOW to turn on, HIGH to turn off
+        if (LOW == mcp23017[MCP_OUTPUT_INDEX].digitalRead(ina))
         {
           outputEvent(MCP_OUTPUT_INDEX, ina, RELAY, RELAY_OFF);
         }
