@@ -456,17 +456,15 @@ void outputEvent(uint8_t id, uint8_t output, uint8_t type, uint8_t state)
 
 void inputEvent(uint8_t id, uint8_t input, uint8_t type, uint8_t state)
 {
+  // Check the input corresponds to an existing INA260 (we always read all 16 pins on
+  // the input MCP so just ignore any events for those without a corresponding output)
+  if (bitRead(g_inasFound, input) == 0)
+    return;
+
+  // Pass this event straight thru to the output handler, using same index
   uint8_t outputType = RELAY;
   uint8_t outputState = state == LOW_EVENT ? RELAY_ON : RELAY_OFF;
 
-  // Check the input corresponds to an existing INA260
-  if (bitRead(g_inasFound, input) == 0)
-  {
-    rack32.println(F("[pdu ] invalid input, no INA260 found"));
-    return;
-  }
-  
-  // Pass this event straight thru to the output handler, using same index
   outputEvent(MCP_OUTPUT_INDEX, input, outputType, outputState);
 }
 
