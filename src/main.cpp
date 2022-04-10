@@ -549,13 +549,10 @@ void processMcps()
       oxrsOutput.process();
     }
     
-    // Read the values for all 16 pins on this MCP
-    uint16_t io_value = mcp23017[mcp].readGPIOAB();
-    
     // Check for any input events
     if (mcp == MCP_INPUT_INDEX)
     {
-      oxrsInput.process(mcp, io_value);    
+      oxrsInput.process(mcp, mcp23017[mcp].readGPIOAB());    
     }
   }
 }
