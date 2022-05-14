@@ -613,7 +613,7 @@ void scanI2CBus()
       mcp23017[mcp].begin_I2C(MCP_I2C_ADDRESS[mcp]);
       for (uint8_t pin = 0; pin < MCP_PIN_COUNT; pin++)
       {
-        mcp23017[mcp].pinMode(pin, mcp == MCP_OUTPUT_INDEX ? OUTPUT : INPUT);
+        mcp23017[mcp].pinMode(pin, mcp == MCP_OUTPUT_INDEX ? OUTPUT : INPUT_PULLUP);
       }
   
       if (mcp == MCP_OUTPUT_INDEX)
