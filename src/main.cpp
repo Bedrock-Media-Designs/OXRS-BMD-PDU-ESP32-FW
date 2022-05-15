@@ -634,7 +634,8 @@ void scanI2CBus()
       if (mcp == MCP_OUTPUT_INDEX)
       {
         // Initialise the output handler (default to RELAY, not configurable)
-        oxrsOutput.begin(outputEvent, RELAY);
+        // NOTE: the PDU relays are NC - so startup in ON state
+        oxrsOutput.begin(outputEvent, RELAY, RELAY_ON);
       }
       if (mcp == MCP_INPUT_INDEX)
       {
