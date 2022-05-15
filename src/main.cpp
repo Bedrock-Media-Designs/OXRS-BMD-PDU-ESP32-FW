@@ -25,7 +25,7 @@
 
 /*--------------------------- Constants -------------------------------*/
 // Serial
-#define       SERIAL_BAUD_RATE      115200
+#define       SERIAL_BAUD_RATE        115200
 
 // INA260 setup (should we make this configurable?)
 const INA260_AveragingCount DEFAULT_AVERAGING_COUNT = INA260_COUNT_16;
@@ -39,21 +39,21 @@ const uint8_t INA_COUNT             = sizeof(INA_I2C_ADDRESS);
 const byte    MCP_I2C_ADDRESS[]     = { 0x20, 0x21 };
 const uint8_t MCP_COUNT             = sizeof(MCP_I2C_ADDRESS);
 
-#define       MCP_OUTPUT_INDEX      0
-#define       MCP_INPUT_INDEX       1
+#define       MCP_OUTPUT_INDEX        0
+#define       MCP_INPUT_INDEX         1
 
 // Each MCP23017 has 16 I/O pins
-#define       MCP_PIN_COUNT         16
+#define       MCP_PIN_COUNT           16
 
 // Speed up the I2C bus to get faster event handling
-#define       I2C_CLOCK_SPEED       400000L
+#define       I2C_CLOCK_SPEED         400000L
 
 // Can only display a max of 8 horizontal bars (plus a "T"otal bar)
-#define       MAX_HBAR_COUNT        8
+#define       MAX_HBAR_COUNT          8
 
 // Cycle time to read INAs (INA260_TIME_x * INA260_COUNT_x * 2 + margin)
 // set to 40ms (25Hz scan frequency)
-#define       INA_CYCLE_TIME        40L
+#define       INA_CYCLE_TIME          40L
 
 /*--------------------------- Global Variables ------------------------*/
 // Each bit corresponds to a device found on the IC2 bus
@@ -62,18 +62,18 @@ uint8_t g_mcpsFound = 0;
 
 // Publish telemetry data interval - extend or disable via the config
 // option "publishTelemetrySeconds" - default to 5s, zero to disable
-uint32_t g_publishTelemetry_ms    = 5000L;
-uint32_t g_lastPublishTelemetry   = 0L;
+uint32_t g_publishPduTelemetry_ms   = 5000L;
+uint32_t g_lastPublishPduTelemetry  = 0L;
 
 // Supply voltage is limited to 12V only - we set limits at +/-2V
-uint32_t g_supplyVoltage_mV       = 12000L;
-uint32_t g_supplyVoltageDelta_mV  = 2000L;
+uint32_t g_supplyVoltage_mV         = 12000L;
+uint32_t g_supplyVoltageDelta_mV    = 2000L;
 
 // Current limit is configurable for combined and individual outputs
-uint32_t g_overCurrentLimit_mA    = 10000L;
+uint32_t g_overCurrentLimit_mA      = 10000L;
 
 // Timer for INA scan cycle timing
-uint32_t g_inaTimer = 0L;
+uint32_t g_inaTimer                 = 0L;
 
 /*--------------------------- Instantiate Globals ---------------------*/
 // Rack32 handler
@@ -154,13 +154,13 @@ int checkVoltageLimits(float mV)
   return 0;
 }
 
-void publishTelemetry(float mA[], float mV[], float mW[], bool alert[])
+void publishPduTelemetry(float mA[], float mV[], float mW[], bool alert[])
 {
   // Ignore if publishing has been disabled
-  if (g_publishTelemetry_ms == 0) { return; }
+  if (g_publishPduTelemetry_ms == 0) { return; }
 
   // Check if we are ready to publish
-  if ((millis() - g_lastPublishTelemetry) > g_publishTelemetry_ms)
+  if ((millis() - g_lastPublishPduTelemetry) > g_publishPduTelemetry_ms)
   {
     DynamicJsonDocument telemetry(1024);
     JsonArray array = telemetry.to<JsonArray>();
@@ -185,7 +185,7 @@ void publishTelemetry(float mA[], float mV[], float mW[], bool alert[])
     }
     
     // Reset our timer
-    g_lastPublishTelemetry = millis();
+    g_lastPublishPduTelemetry = millis();
   }
 }
 
@@ -320,7 +320,7 @@ void jsonConfig(JsonVariant json)
 {
   if (json.containsKey("publishPduTelemetrySeconds"))
   {
-    g_publishTelemetry_ms = json["publishPduTelemetrySeconds"].as<uint32_t>() * 1000L;
+    g_publishPduTelemetry_ms = json["publishPduTelemetrySeconds"].as<uint32_t>() * 1000L;
   }
 
   if (json.containsKey("overCurrentLimitMilliAmps"))
@@ -533,7 +533,7 @@ void processInas()
     setBarValue(INA_COUNT, mATotal, NAN);
 
     // Publish telemetry data if required
-    publishTelemetry(mA, mV, mW, alert);
+    publishPduTelemetry(mA, mV, mW, alert);
   }
 }
 
@@ -556,6 +556,21 @@ void processMcps()
     {
       oxrsInput.process(mcp, mcp23017[mcp].readGPIOAB());    
     }
+  }
+}
+
+void processFans()
+{
+  // Let fan controllers handle any events etc
+  oxrsFan.loop();
+
+  // Publish fan telemetry
+  DynamicJsonDocument telemetry(4096);
+  oxrsFan.getTelemetry(telemetry.as<JsonVariant>());
+  
+  if (telemetry.size() > 0)
+  {
+    rack32.publishTelemetry(telemetry.as<JsonVariant>());
   }
 }
 
@@ -714,15 +729,6 @@ void loop()
   // Process MCPs
   processMcps();
 
-  // Let fan controllers handle any events etc
-  oxrsFan.loop();
-
-  // Publish fan telemetry
-  DynamicJsonDocument telemetry(4096);
-  oxrsFan.getTelemetry(telemetry.as<JsonVariant>());
-  
-  if (telemetry.size() > 0)
-  {
-    rack32.publishTelemetry(telemetry.as<JsonVariant>());
-  }  
+  // Process fans
+  processFans();
 }
