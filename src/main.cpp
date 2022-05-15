@@ -61,8 +61,8 @@ uint8_t g_inasFound = 0;
 uint8_t g_mcpsFound = 0;
 
 // Publish telemetry data interval - extend or disable via the config
-// option "publishTelemetrySeconds" - default to 5s, zero to disable
-uint32_t g_publishPduTelemetry_ms   = 5000L;
+// option "publishTelemetrySeconds" - default to 60s, zero to disable
+uint32_t g_publishPduTelemetry_ms   = 60000L;
 uint32_t g_lastPublishPduTelemetry  = 0L;
 
 // Supply voltage is limited to 12V only - we set limits at +/-2V
