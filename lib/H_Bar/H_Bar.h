@@ -60,7 +60,8 @@ class H_Bar
     TFT_eSPI *_tft;
     int   _y;
 
-    int   _state   = STATE_OFF;
+    // NC relays on the PDU so assume on boot they are ON
+    int   _state   = STATE_ON;
     float _peak_mA = -1;
     float _max_mA  = BAR_MAX_MA;
 
