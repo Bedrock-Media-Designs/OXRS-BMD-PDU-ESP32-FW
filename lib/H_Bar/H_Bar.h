@@ -14,7 +14,6 @@
 #define BAR_H         9
 #define BAR_GAP       1
 #define BAR_SEGMENTS  20 
-#define BAR_MAX_MA    2000.0
 
 // Value 'x' locations (current/volts)
 #define VALUE_X_A     125
@@ -50,7 +49,7 @@ class H_Bar
     H_Bar(void){};
     
     // Index is 1-based, set to 0 for "T"otal bar
-    void begin(TFT_eSPI *tft, int y, int index = 0);
+    void begin(TFT_eSPI *tft, int y, int index);
 
     void setMaxValue(float mA);
     void setValue(float mA, float mV = NAN);
@@ -63,7 +62,7 @@ class H_Bar
     // NC relays on the PDU so assume on boot they are ON
     int   _state   = STATE_ON;
     float _peak_mA = -1;
-    float _max_mA  = BAR_MAX_MA;
+    float _max_mA  = 1;
 
     void _drawIndex(int index);
     void _drawTotal();
