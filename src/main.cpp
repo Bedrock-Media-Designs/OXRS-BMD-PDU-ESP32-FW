@@ -51,6 +51,9 @@ const uint8_t MCP_COUNT             = sizeof(MCP_I2C_ADDRESS);
 // Can only display a max of 8 horizontal bars (plus a "T"otal bar)
 #define       MAX_HBAR_COUNT          8
 
+// Default maximum mA for each output (configurable via "overCurrentLimitMilliAmps")
+#define       DEFAULT_OVERCURRENT_MA  2000L
+
 // Cycle time to read INAs (INA260_TIME_x * INA260_COUNT_x * 2 + margin)
 // set to 40ms (25Hz scan frequency)
 #define       INA_CYCLE_TIME          40L
@@ -602,7 +605,7 @@ void scanI2CBus()
 
       // Default the over current alert at 2000mA (2A)
       ina260[ina].setAlertType(INA260_ALERT_OVERCURRENT);
-      ina260[ina].setAlertLimit(2000);
+      ina260[ina].setAlertLimit(DEFAULT_OVERCURRENT_MA);
     }
     else
     {
@@ -676,11 +679,13 @@ void initialiseScreen()
 
     // Display index is 1-based
     hBar[ina].begin(screen->getTft(), y, ina + 1);    
+    hBar[ina].setMaxValue(DEFAULT_OVERCURRENT_MA);
     y += 14;
   }
   
   // Initialise a bar for the "T"otal
   hBar[INA_COUNT].begin(screen->getTft(), y, 0);
+  hBar[INA_COUNT].setMaxValue(g_overCurrentLimit_mA);
 }
 
 /**
