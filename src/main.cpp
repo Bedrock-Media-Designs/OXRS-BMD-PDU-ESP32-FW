@@ -481,6 +481,10 @@ void jsonOutputCommand(JsonVariant json)
 
 void jsonCommand(JsonVariant json)
 {
+  Serial.print(F("[DEBUG] JSON command received: "));
+  serializeJson(json, Serial);
+  Serial.println();
+  
   if (json.containsKey("outputs"))
   {
     for (JsonVariant output : json["outputs"].as<JsonArray>())
@@ -568,7 +572,7 @@ void processInas()
         if (voltageCheck < 0)
         {
           // Under-voltage alert
-          alertType[ina] = ALERT_TYPE_V_UNDER;
+          //alertType[ina] = ALERT_TYPE_V_UNDER;
         }
         else if (voltageCheck > 0)
         {
