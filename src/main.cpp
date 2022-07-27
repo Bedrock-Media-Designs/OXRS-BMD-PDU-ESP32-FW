@@ -251,9 +251,9 @@ uint8_t getIndex(JsonVariant json)
 
 void publishOutputEvent(uint8_t index, uint8_t type, uint8_t state)
 {
-  char outputType[8];
+  char outputType[16];
   getOutputType(outputType, type);
-  char outputEvent[7];
+  char outputEvent[16];
   getOutputEventType(outputEvent, state);
 
   StaticJsonDocument<128> json;
@@ -273,7 +273,7 @@ void publishOutputEvent(uint8_t index, uint8_t type, uint8_t state)
 
 void publishAlertEvent(uint8_t index, uint8_t alertType)
 {
-  char alertEvent[18];
+  char alertEvent[32];
   getAlertEventType(alertEvent, alertType);
 
   StaticJsonDocument<128> json;
@@ -325,7 +325,7 @@ void outputConfigSchema(JsonVariant json)
 void setConfigSchema()
 {
   // Define our config schema
-  StaticJsonDocument<2048> json;
+  DynamicJsonDocument json(4096);
   JsonVariant config = json.as<JsonVariant>();
 
   JsonObject publishPduTelemetrySeconds = config.createNestedObject("publishPduTelemetrySeconds");
@@ -431,7 +431,7 @@ void outputCommandSchema(JsonVariant json)
 void setCommandSchema()
 {
   // Define our config schema
-  StaticJsonDocument<2048> json;
+  DynamicJsonDocument json(4096);
   JsonVariant command = json.as<JsonVariant>();
 
   outputCommandSchema(command);
@@ -481,10 +481,6 @@ void jsonOutputCommand(JsonVariant json)
 
 void jsonCommand(JsonVariant json)
 {
-  Serial.print(F("[DEBUG] JSON command received: "));
-  serializeJson(json, Serial);
-  Serial.println();
-  
   if (json.containsKey("outputs"))
   {
     for (JsonVariant output : json["outputs"].as<JsonArray>())
