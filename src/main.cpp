@@ -71,7 +71,7 @@ uint8_t g_inasFound = 0;
 uint8_t g_mcpsFound = 0;
 
 // Publish telemetry data interval - extend or disable via the config
-// option "publishTelemetrySeconds" - default to 60s, zero to disable
+// option "publishPduTelemetrySeconds" - default to 60s, zero to disable
 uint32_t g_publishTelemetry_ms      = 60000L;
 uint32_t g_lastPublishTelemetry     = 0L;
 
