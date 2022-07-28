@@ -568,7 +568,7 @@ void processInas()
         if (voltageCheck < 0)
         {
           // Under-voltage alert
-          //alertType[ina] = ALERT_TYPE_V_UNDER;
+          alertType[ina] = ALERT_TYPE_V_UNDER;
         }
         else if (voltageCheck > 0)
         {
