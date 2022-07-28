@@ -58,15 +58,22 @@ const uint8_t MCP_COUNT             = sizeof(MCP_I2C_ADDRESS);
 // set to 40ms (25Hz scan frequency)
 #define       INA_CYCLE_TIME          40L
 
+// Alert types
+#define       ALERT_TYPE_NONE         0
+#define       ALERT_TYPE_V_OVER       1
+#define       ALERT_TYPE_V_UNDER      2
+#define       ALERT_TYPE_I_OVER       3
+#define       ALERT_TYPE_I_OVER_TOTAL 4
+
 /*--------------------------- Global Variables ------------------------*/
 // Each bit corresponds to a device found on the IC2 bus
 uint8_t g_inasFound = 0;
 uint8_t g_mcpsFound = 0;
 
 // Publish telemetry data interval - extend or disable via the config
-// option "publishTelemetrySeconds" - default to 60s, zero to disable
-uint32_t g_publishPduTelemetry_ms   = 60000L;
-uint32_t g_lastPublishPduTelemetry  = 0L;
+// option "publishPduTelemetrySeconds" - default to 60s, zero to disable
+uint32_t g_publishTelemetry_ms      = 60000L;
+uint32_t g_lastPublishTelemetry     = 0L;
 
 // Supply voltage is limited to 12V only - we set limits at +/-2V
 uint32_t g_supplyVoltage_mV         = 12000L;
@@ -146,6 +153,30 @@ void getOutputEventType(char eventType[], uint8_t state)
   }
 }
 
+void getAlertEventType(char eventType[], uint8_t alertType)
+{
+  // Determine what alert type we need to publish
+  sprintf_P(eventType, PSTR("error"));
+  switch (alertType)
+  {
+    case ALERT_TYPE_NONE:
+      sprintf_P(eventType, PSTR("none"));
+      break;
+    case ALERT_TYPE_V_OVER:
+      sprintf_P(eventType, PSTR("overVoltage"));
+      break;
+    case ALERT_TYPE_V_UNDER:
+      sprintf_P(eventType, PSTR("underVoltage"));
+      break;
+    case ALERT_TYPE_I_OVER:
+      sprintf_P(eventType, PSTR("overCurrent"));
+      break;
+    case ALERT_TYPE_I_OVER_TOTAL:
+      sprintf_P(eventType, PSTR("overCurrentTotal"));
+      break;
+  }
+}
+
 int checkVoltageLimits(float mV)
 {
   uint32_t underLimit_mV = g_supplyVoltage_mV - g_supplyVoltageDelta_mV;
@@ -157,13 +188,13 @@ int checkVoltageLimits(float mV)
   return 0;
 }
 
-void publishPduTelemetry(float mA[], float mV[], float mW[], bool alert[])
+void publishTelemetry(float mA[], float mV[], float mW[])
 {
   // Ignore if publishing has been disabled
-  if (g_publishPduTelemetry_ms == 0) { return; }
+  if (g_publishTelemetry_ms == 0) { return; }
 
   // Check if we are ready to publish
-  if ((millis() - g_lastPublishPduTelemetry) > g_publishPduTelemetry_ms)
+  if ((millis() - g_lastPublishTelemetry) > g_publishTelemetry_ms)
   {
     DynamicJsonDocument telemetry(1024);
     JsonArray array = telemetry.to<JsonArray>();
@@ -178,7 +209,6 @@ void publishPduTelemetry(float mA[], float mV[], float mW[], bool alert[])
       json["mA"] = mA[ina];
       json["mV"] = mV[ina];
       json["mW"] = mW[ina];
-      json["alert"] = alert[ina];
     }
 
     // Publish to MQTT
@@ -188,7 +218,7 @@ void publishPduTelemetry(float mA[], float mV[], float mW[], bool alert[])
     }
     
     // Reset our timer
-    g_lastPublishPduTelemetry = millis();
+    g_lastPublishTelemetry = millis();
   }
 }
 
@@ -221,15 +251,35 @@ uint8_t getIndex(JsonVariant json)
 
 void publishOutputEvent(uint8_t index, uint8_t type, uint8_t state)
 {
-  char outputType[8];
+  char outputType[16];
   getOutputType(outputType, type);
-  char outputEvent[7];
+  char outputEvent[16];
   getOutputEventType(outputEvent, state);
 
   StaticJsonDocument<128> json;
   json["index"] = index;
   json["type"] = outputType;
   json["event"] = outputEvent;
+
+  if (!rack32.publishStatus(json.as<JsonVariant>()))
+  {
+    rack32.print(F("[pdu ] [failover] "));
+    serializeJson(json, rack32);
+    rack32.println();
+
+    // TODO: add failover handling code here
+  }
+}
+
+void publishAlertEvent(uint8_t index, uint8_t alertType)
+{
+  char alertEvent[32];
+  getAlertEventType(alertEvent, alertType);
+
+  StaticJsonDocument<128> json;
+  json["index"] = index;
+  json["type"] = "alert";
+  json["event"] = alertEvent;
 
   if (!rack32.publishStatus(json.as<JsonVariant>()))
   {
@@ -275,7 +325,7 @@ void outputConfigSchema(JsonVariant json)
 void setConfigSchema()
 {
   // Define our config schema
-  StaticJsonDocument<2048> json;
+  DynamicJsonDocument json(4096);
   JsonVariant config = json.as<JsonVariant>();
 
   JsonObject publishPduTelemetrySeconds = config.createNestedObject("publishPduTelemetrySeconds");
@@ -323,7 +373,7 @@ void jsonConfig(JsonVariant json)
 {
   if (json.containsKey("publishPduTelemetrySeconds"))
   {
-    g_publishPduTelemetry_ms = json["publishPduTelemetrySeconds"].as<uint32_t>() * 1000L;
+    g_publishTelemetry_ms = json["publishPduTelemetrySeconds"].as<uint32_t>() * 1000L;
   }
 
   if (json.containsKey("overCurrentLimitMilliAmps"))
@@ -381,7 +431,7 @@ void outputCommandSchema(JsonVariant json)
 void setCommandSchema()
 {
   // Define our config schema
-  StaticJsonDocument<2048> json;
+  DynamicJsonDocument json(4096);
   JsonVariant command = json.as<JsonVariant>();
 
   outputCommandSchema(command);
@@ -482,7 +532,7 @@ void processInas()
     float mA[INA_COUNT];
     float mV[INA_COUNT];
     float mW[INA_COUNT];
-    bool alert[INA_COUNT];
+    uint8_t alertType[INA_COUNT];
 
     float mATotal = 0;
 
@@ -496,23 +546,44 @@ void processInas()
       mA[ina] = ina260[ina].readCurrent();
       mV[ina] = ina260[ina].readBusVoltage();
       mW[ina] = ina260[ina].readPower();
-      alert[ina] = ina260[ina].alertFunctionFlag();
 
-      // Check bus voltage limits
-      int voltageCheck = checkVoltageLimits(mV[ina]);
-      if (voltageCheck < 0)
+      // We are using the internal over-current alert type
+      alertType[ina] = ina260[ina].alertFunctionFlag() ? ALERT_TYPE_I_OVER : ALERT_TYPE_NONE;
+
+      // Keep track of total current
+      mATotal += mA[ina];
+    }
+
+    // Check for any alerted outputs and shut them off
+    for (uint8_t ina = 0; ina < INA_COUNT; ina++)
+    {
+      if (bitRead(g_inasFound, ina) == 0)
+        continue;
+
+      // Check for any manual alert states if not already alerted
+      if (alertType[ina] == ALERT_TYPE_NONE)
       {
-        // Under-voltage alert
-        alert[ina] = true;
+        // Check bus voltage limits and set manual alert states
+        int voltageCheck = checkVoltageLimits(mV[ina]);
+        if (voltageCheck < 0)
+        {
+          // Under-voltage alert
+          alertType[ina] = ALERT_TYPE_V_UNDER;
+        }
+        else if (voltageCheck > 0)
+        {
+          // Over-voltage alert
+          alertType[ina] = ALERT_TYPE_V_OVER;
+        }      
+        else if (mATotal >= g_overCurrentLimit_mA)
+        {
+          // Total over-current alert
+          alertType[ina] = ALERT_TYPE_I_OVER_TOTAL;
+        }
       }
-      else if (voltageCheck > 0)
-      {
-        // Over-voltage alert
-        alert[ina] = true;
-      }
-    
-      // Check for the alert state, i.e. current limit hit
-      if (alert[ina])
+
+      // Shut off any output in an alerted state
+      if (alertType[ina] != ALERT_TYPE_NONE)
       {
         // Turn off relay if it is currently on
         // NOTE: the PDU relays are NC - so LOW to turn on, HIGH to turn off
@@ -521,22 +592,22 @@ void processInas()
           outputEvent(MCP_OUTPUT_INDEX, ina, RELAY, RELAY_OFF);
         }
 
+        // Publish an alert event
+        publishAlertEvent(ina, alertType[ina]);
+
         // Update the bar state to ALERT
         setBarState(ina, STATE_ALERT);
       }
 
       // Update the display for this sensor
       setBarValue(ina, mA[ina], mV[ina]);
-    
-      // Keep track of total current
-      mATotal += mA[ina];
-    }
+    }    
 
     // Update the display total
     setBarValue(INA_COUNT, mATotal, NAN);
 
     // Publish telemetry data if required
-    publishPduTelemetry(mA, mV, mW, alert);
+    publishTelemetry(mA, mV, mW);
   }
 }
 
@@ -602,6 +673,10 @@ void scanI2CBus()
       // Set the time over which to measure the current and bus voltage
       ina260[ina].setVoltageConversionTime(DEFAULT_CONVERSION_TIME);
       ina260[ina].setCurrentConversionTime(DEFAULT_CONVERSION_TIME);
+
+      // Set the polarity and disable latching so the alert resets
+      ina260[ina].setAlertPolarity(INA260_ALERT_POLARITY_NORMAL);
+      ina260[ina].setAlertLatch(INA260_ALERT_LATCH_TRANSPARENT);
 
       // Default the over current alert at 2000mA (2A)
       ina260[ina].setAlertType(INA260_ALERT_OVERCURRENT);
