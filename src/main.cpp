@@ -85,6 +85,9 @@ uint32_t g_overCurrentLimit_mA      = 10000L;
 // Timer for INA scan cycle timing
 uint32_t g_inaTimer                 = 0L;
 
+// Last alert type to prevent repeated alert events
+uint8_t g_lastAlertType[INA_COUNT];
+
 /*--------------------------- Instantiate Globals ---------------------*/
 // Rack32 handler
 OXRS_Rack32 rack32(FW_LOGO);
@@ -505,8 +508,11 @@ void outputEvent(uint8_t id, uint8_t output, uint8_t type, uint8_t state)
   // Update the display
   setBarState(output, state == RELAY_ON ? STATE_ON : STATE_OFF);
 
-  // Publish the event (index is 1-based)
+  // Publish an event (index is 1-based)
   publishOutputEvent(output + 1, type, state);
+
+  // Clear the *last alert type* so any subsequent alert triggers
+  g_lastAlertType[output] = ALERT_TYPE_NONE;
 }
 
 void inputEvent(uint8_t id, uint8_t input, uint8_t type, uint8_t state)
@@ -582,8 +588,8 @@ void processInas()
         }
       }
 
-      // Shut off any output in an alerted state
-      if (alertType[ina] != ALERT_TYPE_NONE)
+      // Check for any new alert states
+      if (alertType[ina] != ALERT_TYPE_NONE && alertType[ina] != g_lastAlertType[ina])
       {
         // Turn off relay if it is currently on
         // NOTE: the PDU relays are NC - so LOW to turn on, HIGH to turn off
@@ -592,12 +598,15 @@ void processInas()
           outputEvent(MCP_OUTPUT_INDEX, ina, RELAY, RELAY_OFF);
         }
 
-        // Publish an alert event
-        publishAlertEvent(ina, alertType[ina]);
-
-        // Update the bar state to ALERT
+        // Update the display
         setBarState(ina, STATE_ALERT);
+
+        // Publish an alert event (index is 1-based)
+        publishAlertEvent(ina + 1, alertType[ina]);
       }
+
+      // Update the *last alert type*
+      g_lastAlertType[ina] = alertType[ina];
 
       // Update the display for this sensor
       setBarValue(ina, mA[ina], mV[ina]);
@@ -661,6 +670,9 @@ void scanI2CBus()
     rack32.print(F(" - 0x"));
     rack32.print(INA_I2C_ADDRESS[ina], HEX);
     rack32.print(F("..."));
+
+    // Initialise the *last alert type*
+    g_lastAlertType[ina] = ALERT_TYPE_NONE;
 
     if (ina260[ina].begin(INA_I2C_ADDRESS[ina]))
     {
