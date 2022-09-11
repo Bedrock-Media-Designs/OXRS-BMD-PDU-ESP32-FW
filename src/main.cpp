@@ -328,7 +328,7 @@ void outputConfigSchema(JsonVariant json)
 void setConfigSchema()
 {
   // Define our config schema
-  DynamicJsonDocument json(4096);
+  DynamicJsonDocument json(8192);
   JsonVariant config = json.as<JsonVariant>();
 
   JsonObject publishPduTelemetrySeconds = config.createNestedObject("publishPduTelemetrySeconds");
@@ -434,7 +434,7 @@ void outputCommandSchema(JsonVariant json)
 void setCommandSchema()
 {
   // Define our config schema
-  DynamicJsonDocument json(4096);
+  DynamicJsonDocument json(8192);
   JsonVariant command = json.as<JsonVariant>();
 
   outputCommandSchema(command);
