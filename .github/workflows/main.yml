@@ -36,7 +36,7 @@ jobs:
         pip install --upgrade platformio
     
     - name: Build release binary
-      run: pio run -e rack32-eth -e rack32-wifi
+      run: pio run -e black-eth_ESP32 -e rack32-eth_ESP32
 
     - name: Create release
       uses: ncipollo/release-action@v1
@@ -44,3 +44,4 @@ jobs:
         artifacts: .pio/build/**/*_v${{ github.ref_name }}.bin
         token: ${{ secrets.GITHUB_TOKEN }}
         generateReleaseNotes: true
+        prerelease: false
